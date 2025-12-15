@@ -38,7 +38,7 @@ export async function POST(request: Request) {
       // Create signed JWT token
       const token = jwt.sign(
         { authenticated: true, timestamp: Date.now() },
-        JWT_SECRET,
+        JWT_SECRET!,
         { expiresIn: '7d' }
       )
       
