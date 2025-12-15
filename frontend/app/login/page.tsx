@@ -21,15 +21,17 @@ export default function Login() {
       })
       
       if (response.ok) {
-        router.push('/')
-        router.refresh()
+        // Wait a bit for cookie to be set, then do a full page reload
+        setTimeout(() => {
+          window.location.href = '/'
+        }, 100)
       } else {
         setError('Incorrect password')
         setPassword('')
+        setLoading(false)
       }
     } catch (err) {
       setError('Connection error')
-    } finally {
       setLoading(false)
     }
   }

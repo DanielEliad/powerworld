@@ -32,7 +32,6 @@ services:
     volumes:
       - ./frontend:/app/frontend
       - /app/frontend/node_modules
-      - frontend_next_cache:/app/frontend/.next
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
       - WATCHPACK_POLLING=true
