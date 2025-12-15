@@ -23,10 +23,6 @@ export async function POST(request: Request) {
     if (JWT_SECRET.length < 32) {
       console.warn('⚠️  WARNING: JWT_SECRET is too short (minimum 32 characters recommended)')
     }
-    const weakPasswords = ['password', 'admin', 'powerworld', '12345678', 'powerworld2024']
-    if (weakPasswords.some(weak => PASSWORD.toLowerCase().includes(weak))) {
-      console.error('❌ ERROR: APP_PASSWORD appears to be a weak/default password!')
-    }
   }
 
   try {

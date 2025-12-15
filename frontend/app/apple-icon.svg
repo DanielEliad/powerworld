@@ -1,0 +1,5 @@
+<svg width="180" height="180" viewBox="0 0 180 180" xmlns="http://www.w3.org/2000/svg">
+  <rect width="180" height="180" rx="40" fill="#1e40af"/>
+  <path d="M110 35L65 90h35l-20 55 45-65h-35z" fill="#fbbf24" stroke="#fff" stroke-width="2"/>
+  <text x="90" y="165" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#fff" text-anchor="middle">PowerWorld</text>
+</svg>
