@@ -53,6 +53,31 @@ interface LinesData {
   branches_with_reverse_flow_count?: number
 }
 
+interface BusVoltageError {
+  bus: string
+  timestep: number
+  voltage: number
+  error_type: string
+  message: string
+}
+
+interface BusesData {
+  data: {
+    datetime: string[]
+    buses: { [key: string]: number[] }
+  }
+  bus_numbers: string[]
+  voltage_errors?: BusVoltageError[]
+  buses_with_violations_count?: number
+  statistics?: {
+    [bus: string]: {
+      min: number
+      max: number
+      avg: number
+    }
+  }
+}
+
 interface BatteryCost {
   max_capacity_kwh: number
   rounded_capacity_kwh: number
@@ -91,11 +116,13 @@ interface GeneratorsData {
 interface AnalysisResult {
   lines?: LinesData
   generators?: GeneratorsData
+  buses?: BusesData
 }
 
 export default function Home() {
   const [linesPasteData, setLinesPasteData] = useState<string>('')
   const [generatorsPasteData, setGeneratorsPasteData] = useState<string>('')
+  const [busesPasteData, setBusesPasteData] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>('')
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null)
@@ -148,6 +175,96 @@ export default function Home() {
   }, [showPastePanel, showBudgetExpanded])
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
+  // Save data to localStorage whenever it changes
+  useEffect(() => {
+    if (linesPasteData) {
+      localStorage.setItem('powerworld_lines_data', linesPasteData)
+    }
+  }, [linesPasteData])
+
+  useEffect(() => {
+    if (generatorsPasteData) {
+      localStorage.setItem('powerworld_generators_data', generatorsPasteData)
+    }
+  }, [generatorsPasteData])
+
+  useEffect(() => {
+    if (busesPasteData) {
+      localStorage.setItem('powerworld_buses_data', busesPasteData)
+    }
+  }, [busesPasteData])
+
+  // Load and auto-process data on page load
+  useEffect(() => {
+    const loadSavedData = async () => {
+      const savedLines = localStorage.getItem('powerworld_lines_data')
+      const savedGenerators = localStorage.getItem('powerworld_generators_data')
+      const savedBuses = localStorage.getItem('powerworld_buses_data')
+      
+      // Load into state
+      if (savedLines) setLinesPasteData(savedLines)
+      if (savedGenerators) setGeneratorsPasteData(savedGenerators)
+      if (savedBuses) setBusesPasteData(savedBuses)
+      
+      // Auto-process if data exists
+      if (savedLines) {
+        try {
+          const response = await fetch(`${API_URL}/api/analyze/lines`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data: savedLines }),
+          })
+          if (response.ok) {
+            const data = await response.json()
+            setAnalysisResult(prev => ({ ...prev, lines: data }))
+            setSelectedBranches(new Set(data.branch_names))
+          }
+        } catch (err) {
+          console.error('Error auto-loading lines:', err)
+        }
+      }
+      
+      if (savedGenerators) {
+        try {
+          const response = await fetch(`${API_URL}/api/analyze/generators`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data: savedGenerators }),
+          })
+          if (response.ok) {
+            const data = await response.json()
+            if (data.validation_errors) {
+              setBatteryErrors(data.validation_errors)
+            }
+            setAnalysisResult(prev => ({ ...prev, generators: data }))
+            setGeneratorData([...data.data])
+          }
+        } catch (err) {
+          console.error('Error auto-loading generators:', err)
+        }
+      }
+      
+      if (savedBuses) {
+        try {
+          const response = await fetch(`${API_URL}/api/analyze/buses`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data: savedBuses }),
+          })
+          if (response.ok) {
+            const data = await response.json()
+            setAnalysisResult(prev => ({ ...prev, buses: data }))
+          }
+        } catch (err) {
+          console.error('Error auto-loading buses:', err)
+        }
+      }
+    }
+    
+    // Only run once on mount
+    loadSavedData()
+  }, [])
 
   const handleLinesPaste = async () => {
     if (!linesPasteData.trim()) {
@@ -229,6 +346,38 @@ export default function Home() {
       setGeneratorData([...data.data])
     } catch (err) {
       console.error('Error processing generators:', err)
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleBusesPaste = async () => {
+    if (!busesPasteData.trim()) {
+      setError('Please paste buses data')
+      return
+    }
+
+    setLoading(true)
+    setError('')
+
+    try {
+      const response = await fetch(`${API_URL}/api/analyze/buses`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ data: busesPasteData }),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.detail || 'Failed to process buses data')
+      }
+
+      const data = await response.json()
+      setAnalysisResult(prev => ({ ...prev, buses: data }))
+    } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred')
     } finally {
       setLoading(false)
@@ -418,6 +567,69 @@ export default function Home() {
       await navigator.clipboard.writeText(result.data)
     } catch (err) {
       console.error('Error exporting battery data:', err)
+    }
+  }
+
+  const generateReport = async () => {
+    if (!analysisResult) return
+
+    try {
+      // Prepare data for report
+      const batteryErrors = analysisResult.generators?.validation_errors || []
+      const errors = batteryErrors.filter(e => 
+        e.error_type !== 'battery_not_fully_used' && 
+        e.error_type !== 'battery_underutilized_rounding'
+      )
+      const warnings = batteryErrors.filter(e => 
+        e.error_type === 'battery_not_fully_used' || 
+        e.error_type === 'battery_underutilized_rounding'
+      )
+      const reverseFlowErrors = analysisResult.lines?.reverse_flow_errors || []
+      const voltageErrors = analysisResult.buses?.voltage_errors || []
+
+      const overallStats = getOverallStats()
+      
+      const reportData = {
+        budget_summary: analysisResult.generators?.budget_summary,
+        battery_costs: analysisResult.generators?.battery_costs,
+        errors: errors,
+        warnings: warnings,
+        reverse_flow_errors: reverseFlowErrors,
+        voltage_errors: voltageErrors,
+        statistics: overallStats,
+        lines_data: analysisResult.lines?.data,
+        battery_capacity: analysisResult.generators?.battery_capacity,
+        mw_from_data: analysisResult.lines?.mw_from_data,
+        battery_table: analysisResult.generators?.battery_table,
+        buses_data: analysisResult.buses?.data,
+        buses_with_violations_count: analysisResult.buses?.buses_with_violations_count
+      }
+
+      const response = await fetch(`${API_URL}/api/generate-report`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(reportData),
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to generate report')
+      }
+
+      // Download the PDF
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `powerworld_report_${new Date().toISOString().slice(0,10)}.pdf`
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
+    } catch (err) {
+      console.error('Error generating report:', err)
+      alert('Failed to generate report')
     }
   }
 
@@ -660,7 +872,9 @@ export default function Home() {
               )
               // Include reverse flow errors from lines data
               const reverseFlowErrors = analysisResult?.lines?.reverse_flow_errors || []
-              const hasErrors = errors.length > 0 || reverseFlowErrors.length > 0
+              // Include voltage errors from buses data
+              const voltageErrors = analysisResult?.buses?.voltage_errors || []
+              const hasErrors = errors.length > 0 || reverseFlowErrors.length > 0 || voltageErrors.length > 0
               const hasWarnings = warnings.length > 0
               
               // Don't render if no errors or warnings
@@ -679,7 +893,7 @@ export default function Home() {
                     <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
                           <span className={`font-semibold text-sm ${hasErrors ? 'text-red-400' : 'text-yellow-400'}`}>
-                            {hasErrors ? '⚠️' : '⚡'} {hasErrors ? (errors.length + reverseFlowErrors.length) : warnings.length} {hasErrors ? 'Validation Error' : 'Warning'}{(hasErrors ? (errors.length + reverseFlowErrors.length) : warnings.length) !== 1 ? 's' : ''}
+                            {hasErrors ? '⚠️' : '⚡'} {hasErrors ? (errors.length + reverseFlowErrors.length + voltageErrors.length) : warnings.length} {hasErrors ? 'Validation Error' : 'Warning'}{(hasErrors ? (errors.length + reverseFlowErrors.length + voltageErrors.length) : warnings.length) !== 1 ? 's' : ''}
                           </span>
                         {!showErrorsExpanded && (
                           <span className={`text-xs ${hasErrors ? 'text-red-300' : 'text-yellow-300'}`}>
@@ -709,7 +923,7 @@ export default function Home() {
                                 } else if (err.error_type === "above_max_size" && err.max_size !== undefined) {
                                   errorMessage += ` (exceeds max ${err.max_size} kWh)`
                                 } else if (err.error_type === "exceeds_power_rating" && err.power !== undefined && err.max_power_rating !== undefined) {
-                                  errorMessage = `Bus ${err.bus} - ls${getHourFromTimestep(err.timestep)}: Power ${Math.abs(err.power).toFixed(3)} MW exceeds rating ${err.max_power_rating.toFixed(3)} MW`
+                                  errorMessage = `Bus ${err.bus} - ${getHourFromTimestep(err.timestep)}: Power ${Math.abs(err.power).toFixed(3)} MW exceeds 1C rate limit ${err.max_power_rating.toFixed(3)} MW`
                                 } else if (err.message) {
                                   errorMessage = err.message
                                 }
@@ -731,10 +945,18 @@ export default function Home() {
                                   ⚡ {err.message}
                                 </div>
                               ))}
+                              {voltageErrors.map((err, idx) => (
+                                <div 
+                                  key={`voltage-${idx}`}
+                                  className="text-red-300 text-xs py-1 px-2 bg-red-900/20 rounded"
+                                >
+                                  🔌 {err.message}
+                                </div>
+                              ))}
                             </div>
                           </>
                         )}
-                        {hasWarnings && (warnings.length > 0 || reverseFlowWarnings.length > 0) && (
+                        {hasWarnings && warnings.length > 0 && (
                           <>
                             <div className={`font-semibold text-sm mb-2 ${hasErrors ? 'mt-3 text-yellow-400' : 'text-yellow-400'}`}>
                               Warnings:
@@ -758,6 +980,15 @@ export default function Home() {
               )
             })()}
             <div className="flex items-center gap-2 ml-auto">
+              {analysisResult && (analysisResult.lines || analysisResult.generators) && (
+                <button
+                  onClick={generateReport}
+                  className="px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-sm font-medium"
+                  title="Generate PDF Report"
+                >
+                  📄 Generate Report
+                </button>
+              )}
               {analysisResult?.generators?.battery_table && analysisResult.generators.battery_table.data.length > 0 && (
                 <button
                   onClick={exportBatteryToClipboard}
@@ -765,6 +996,27 @@ export default function Home() {
                   title="Copy battery data to clipboard"
                 >
                   Copy Battery Data
+                </button>
+              )}
+              {(linesPasteData || generatorsPasteData || busesPasteData || analysisResult) && (
+                <button
+                  onClick={() => {
+                    if (confirm('Clear all saved data? This will remove all charts and paste data.')) {
+                      localStorage.removeItem('powerworld_lines_data')
+                      localStorage.removeItem('powerworld_generators_data')
+                      localStorage.removeItem('powerworld_buses_data')
+                      setLinesPasteData('')
+                      setGeneratorsPasteData('')
+                      setBusesPasteData('')
+                      setAnalysisResult(null)
+                      setBatteryErrors([])
+                      setGeneratorData([])
+                    }
+                  }}
+                  className="px-3 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors text-sm font-medium"
+                  title="Clear all saved data"
+                >
+                  🗑️ Clear Data
                 </button>
               )}
               <div className="relative" ref={pastePanelRef}>
@@ -777,9 +1029,9 @@ export default function Home() {
                 
                 {/* Dropdown Paste Panel */}
                 {showPastePanel && (
-                  <div className="absolute right-0 top-full mt-2 w-[600px] max-w-[90vw] bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50">
+                  <div className="absolute right-0 top-full mt-2 w-[900px] max-w-[95vw] bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50">
                     <div className="p-4">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div className="border border-gray-700 rounded p-4 bg-gray-800/50">
                           <p className="mb-2 text-gray-300 text-sm font-medium">Lines Data</p>
                           <textarea
@@ -823,6 +1075,28 @@ export default function Home() {
                             className="mt-3 w-full px-4 py-2 bg-gray-700 text-gray-100 rounded hover:bg-gray-600 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             {loading ? 'Processing...' : 'Process Generators Data'}
+                          </button>
+                        </div>
+
+                        <div className="border border-gray-700 rounded p-4 bg-gray-800/50">
+                          <p className="mb-2 text-gray-300 text-sm font-medium">Buses Data</p>
+                          <textarea
+                            value={busesPasteData}
+                            onChange={(e) => setBusesPasteData(e.target.value)}
+                            onPaste={(e) => {
+                              e.preventDefault()
+                              const pasted = e.clipboardData.getData('text')
+                              setBusesPasteData(pasted)
+                            }}
+                            placeholder="Paste buses data here (Date, Time, Skip, PU Volt columns...)"
+                            className="w-full h-32 bg-gray-700 border border-gray-600 rounded px-3 py-2 text-gray-100 text-xs font-mono focus:outline-none focus:border-gray-500 resize-none"
+                          />
+                          <button
+                            onClick={handleBusesPaste}
+                            disabled={loading}
+                            className="mt-3 w-full px-4 py-2 bg-gray-700 text-gray-100 rounded hover:bg-gray-600 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {loading ? 'Processing...' : 'Process Buses Data'}
                           </button>
                         </div>
                       </div>
@@ -890,6 +1164,15 @@ export default function Home() {
                     {overallStats.reverseFlowCount}
                   </div>
                   <p className="text-xs text-gray-500 mt-1">Negative power flow</p>
+                </div>
+              )}
+              {analysisResult?.buses?.data && (
+                <div className={`bg-gray-800 border p-4 rounded ${(analysisResult.buses.buses_with_violations_count || 0) === 0 ? 'border-green-600' : 'border-red-600'}`}>
+                  <h3 className="text-sm text-gray-400 mb-1">Buses w/ Voltage Violations</h3>
+                  <div className={`text-2xl font-medium ${(analysisResult.buses.buses_with_violations_count || 0) === 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {analysisResult.buses.buses_with_violations_count || 0}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">Outside 0.9-1.1 p.u.</p>
                 </div>
               )}
             </div>
@@ -1036,6 +1319,85 @@ export default function Home() {
             </div>
           )}
 
+          {/* Bus Voltage Profile */}
+          {analysisResult?.buses?.data && analysisResult.buses.bus_numbers && analysisResult.buses.bus_numbers.length > 0 && (
+            <div className="bg-gray-800 border border-gray-700 p-4 rounded">
+              <h2 className="text-lg font-medium text-gray-200 mb-4">
+                Bus Voltage Profile (Per Unit)
+              </h2>
+              <p className="text-sm text-gray-400 mb-4">
+                Voltage must be maintained between 0.9 and 1.1 p.u. (limit lines shown in red)
+              </p>
+              <Plot
+                data={analysisResult.buses.bus_numbers.map(busNum => ({
+                  x: analysisResult.buses!.data.datetime,
+                  y: analysisResult.buses!.data.buses[busNum],
+                  type: 'scatter',
+                  mode: 'lines',
+                  name: `Bus ${busNum}`,
+                  line: { width: 2 }
+                }))}
+                layout={{
+                  ...getPlotlyLayout('Time', 'Voltage (p.u.)', 600, true),
+                  shapes: [
+                    {
+                      type: 'line',
+                      xref: 'paper',
+                      x0: 0,
+                      x1: 1,
+                      yref: 'y',
+                      y0: 0.9,
+                      y1: 0.9,
+                      line: {
+                        color: 'rgba(239, 68, 68, 0.6)',
+                        width: 2,
+                        dash: 'dash'
+                      }
+                    },
+                    {
+                      type: 'line',
+                      xref: 'paper',
+                      x0: 0,
+                      x1: 1,
+                      yref: 'y',
+                      y0: 1.1,
+                      y1: 1.1,
+                      line: {
+                        color: 'rgba(239, 68, 68, 0.6)',
+                        width: 2,
+                        dash: 'dash'
+                      }
+                    }
+                  ],
+                  annotations: [
+                    {
+                      xref: 'paper',
+                      x: 0.02,
+                      y: 0.9,
+                      text: 'Min 0.9 p.u.',
+                      showarrow: false,
+                      bgcolor: 'rgba(239, 68, 68, 0.8)',
+                      bordercolor: 'rgba(239, 68, 68, 0.8)',
+                      font: { color: '#ffffff', size: 10 },
+                    },
+                    {
+                      xref: 'paper',
+                      x: 0.02,
+                      y: 1.1,
+                      text: 'Max 1.1 p.u.',
+                      showarrow: false,
+                      bgcolor: 'rgba(239, 68, 68, 0.8)',
+                      bordercolor: 'rgba(239, 68, 68, 0.8)',
+                      font: { color: '#ffffff', size: 10 },
+                    }
+                  ]
+                }}
+                config={{ displayModeBar: false }}
+                style={{ width: '100%', height: '100%' }}
+              />
+            </div>
+          )}
+
           {analysisResult?.generators?.battery_capacity && Object.keys(analysisResult.generators.battery_capacity).length > 0 && (
             <div className="bg-gray-800 border border-gray-700 p-4 rounded">
               <h2 className="text-lg font-medium text-gray-200 mb-4">
@@ -1069,7 +1431,8 @@ export default function Home() {
                   Battery Charging/Discharging (Editable)
                 </h2>
                 <p className="text-xs text-gray-400 mb-3">
-                  Edit battery MW values. Negative = charging, positive = discharging.
+                  Edit battery MW values. Negative = charging, positive = discharging. 
+                  <span className="text-yellow-400 font-semibold ml-2">⚠️ 1C Rate Limit:</span> Power must not exceed battery capacity (e.g., 100 kWh battery → max 0.1 MW)
                 </p>
                 <div className="overflow-x-auto">
                   <table className="w-full border-collapse">

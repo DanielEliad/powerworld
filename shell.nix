@@ -5,6 +5,7 @@ pkgs.mkShell {
     python311
     python311Packages.pip
     python311Packages.virtualenv
+    nodejs_22
   ];
 
   shellHook = ''

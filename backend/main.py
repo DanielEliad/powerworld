@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from enum import Enum
@@ -10,19 +11,48 @@ import io
 import re
 import logging
 import math
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib.units import inch
+from reportlab.lib import colors
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
+import plotly.graph_objects as go
+import plotly.io as pio
 
 app = FastAPI(title="PowerWorld Simulation Analyzer")
 
+# CORS Configuration - Use environment variable for security
+# In production, set ALLOWED_ORIGINS to your specific frontend URL
+ALLOWED_ORIGINS_STR = os.getenv("ALLOWED_ORIGINS")
+
+if not ALLOWED_ORIGINS_STR:
+    # Development fallback
+    if os.getenv("NODE_ENV") == "production":
+        raise ValueError("ALLOWED_ORIGINS environment variable is required in production")
+    ALLOWED_ORIGINS_STR = "http://localhost:3000"
+    logging.warning("⚠️  Using default CORS origin (development mode): http://localhost:3000")
+
+ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_STR.split(",")]
+
+# Validate CORS origins for security
+for origin in ALLOWED_ORIGINS:
+    if origin == "*":
+        logging.error("❌ ERROR: Wildcard '*' is not allowed in ALLOWED_ORIGINS for security reasons")
+        raise ValueError("Wildcard CORS origins are not permitted")
+    if not origin.startswith(("http://", "https://")):
+        logging.error(f"❌ ERROR: Invalid origin format: {origin}")
+        raise ValueError(f"Origin must start with http:// or https://: {origin}")
+
+logging.info(f"✓ CORS allowed origins: {ALLOWED_ORIGINS}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -39,8 +69,9 @@ class BatteryType(str, Enum):
 class ValidationErrorType(str, Enum):
     NEGATIVE_CAPACITY = "negative_capacity"
     ABOVE_MAX_SIZE = "above_max_size"
-    EXCEEDS_POWER_RATING = "exceeds_power_rating"
+    EXCEEDS_POWER_RATING = "exceeds_power_rating"  # 1C rate: Power (MW) must not exceed Capacity (MWh)
     BATTERY_NOT_FULLY_USED = "battery_not_fully_used"
+    VOLTAGE_VIOLATION = "voltage_violation"
 
 # Request/Response Models
 class PasteDataRequest(BaseModel):
@@ -90,6 +121,7 @@ BATTERY_CONSTRAINTS_CONFIG = {
     )
 }
 
+# Budget limit constant (300k EUR)
 BUDGET_LIMIT_EUR = 300000
 
 # Bus configuration storage (in-memory)
@@ -114,18 +146,6 @@ DEFAULT_BUS_CONFIG = {
 @app.get("/")
 async def read_root():
     return {"message": "PowerWorld Simulation Analyzer API", "status": "running"}
-
-@app.post("/api/upload")
-async def upload_csv(file: UploadFile = File(...)):
-    if not file.filename.endswith('.csv'):
-        raise HTTPException(status_code=400, detail="File must be a CSV")
-    
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
-    with open(file_path, "wb") as f:
-        content = await file.read()
-        f.write(content)
-    
-    return {"filename": file.filename, "message": "File uploaded successfully"}
 
 def parse_generators_to_dataframe(text: str) -> pd.DataFrame:
     """Parse raw generator data and return a pandas DataFrame."""
@@ -257,6 +277,7 @@ def validate_capacity(bus_num: int, capacity_kwh: pd.Series, mw_values: pd.Serie
     # Check power rating constraint (1C rate: battery can charge/discharge its full capacity in 1 hour)
     # Power rating should be based on the INSTALLED capacity (rounded), not the max reached capacity
     # This avoids circular logic where the capacity depends on the power values we're validating
+    # 1C rate means: Power (MW) = Capacity (kWh) / 1000
     rounded_capacity = round_capacity(max_capacity, constraints.rounding_increment_kwh)
     max_power_rating_mw = rounded_capacity / 1000  # Convert kWh to MWh (which is equivalent to MW for 1-hour periods)
     
@@ -271,7 +292,7 @@ def validate_capacity(bus_num: int, capacity_kwh: pd.Series, mw_values: pd.Serie
                 "max_power_rating": float(max_power_rating_mw),
                 "installed_capacity": float(rounded_capacity),
                 "error_type": ValidationErrorType.EXCEEDS_POWER_RATING.value,
-                "message": f"Bus {bus_num} power {abs_mw:.3f} MW exceeds battery power rating of {max_power_rating_mw:.3f} MW (installed: {rounded_capacity:.0f} kWh)"
+                "message": f"Bus {bus_num} power {abs_mw:.3f} MW exceeds 1C rate limit of {max_power_rating_mw:.3f} MW (battery: {rounded_capacity:.0f} kWh)"
             })
     
     return errors
@@ -605,6 +626,138 @@ async def analyze_lines(request: PasteDataRequest):
         logging.error(f"Error processing lines data: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error processing lines data: {str(e)}")
 
+def parse_buses_to_dataframe(data: str) -> pd.DataFrame:
+    """Parse buses voltage data to dataframe."""
+    lines = data.strip().split('\n')
+    if len(lines) < 2:
+        raise ValueError("Insufficient data rows")
+    
+    header_lines = []
+    data_start = 0
+    for i, line in enumerate(lines):
+        if 'PU Volt' in line or 'Date' in line or 'Time' in line:
+            header_lines.append(line)
+            data_start = i + 1
+    
+    if not header_lines:
+        raise ValueError("No valid header found")
+    
+    header_line = header_lines[-1]
+    headers = [h.strip() for h in re.split(r'\t', header_line)]
+    
+    rows = []
+    for line in lines[data_start:]:
+        if line.strip():
+            parts = [p.strip() for p in re.split(r'\t', line)]
+            if len(parts) >= len(headers):
+                rows.append(parts[:len(headers)])
+    
+    if not rows:
+        raise ValueError("No data rows found")
+    
+    df = pd.DataFrame(rows, columns=headers)
+    
+    # Convert voltage columns to numeric
+    for col in df.columns:
+        if 'PU Volt' in col:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    return df
+
+def validate_bus_voltages(df: pd.DataFrame, min_voltage: float = 0.9, max_voltage: float = 1.1) -> list:
+    """Validate bus voltages and return violations."""
+    errors = []
+    
+    voltage_cols = [col for col in df.columns if 'PU Volt' in col]
+    
+    for col in voltage_cols:
+        # Extract bus number from column name (e.g., "1 PU Volt" -> "1")
+        bus_match = re.match(r'(\d+)\s+PU Volt', col)
+        if not bus_match:
+            continue
+        bus_num = bus_match.group(1)
+        
+        # Check each timestep
+        for idx, voltage in enumerate(df[col]):
+            if pd.notna(voltage):
+                if voltage < min_voltage or voltage > max_voltage:
+                    errors.append({
+                        "bus": bus_num,
+                        "timestep": idx,
+                        "voltage": float(voltage),
+                        "error_type": ValidationErrorType.VOLTAGE_VIOLATION.value,
+                        "message": f"Bus {bus_num} - Timestep {idx}: Voltage = {voltage:.3f} p.u. (must be between {min_voltage} and {max_voltage})"
+                    })
+    
+    return errors
+
+@app.post("/api/analyze/buses")
+async def analyze_buses(request: PasteDataRequest):
+    try:
+        df = parse_buses_to_dataframe(request.data)
+        
+        if 'Date' not in df.columns or 'Time' not in df.columns:
+            raise HTTPException(status_code=400, detail="Date and Time columns are required")
+        
+        # Parse datetimes
+        datetimes = []
+        for _, row in df.iterrows():
+            try:
+                dt = parse_datetime(str(row['Date']), str(row['Time']))
+                datetimes.append(dt)
+            except ValueError:
+                datetimes.append('')
+        
+        # Identify voltage columns
+        voltage_cols = [col for col in df.columns if 'PU Volt' in col]
+        
+        # Extract bus numbers
+        bus_numbers = []
+        for col in voltage_cols:
+            bus_match = re.match(r'(\d+)\s+PU Volt', col)
+            if bus_match:
+                bus_numbers.append(bus_match.group(1))
+        
+        # Convert to dict format
+        buses_dict = {}
+        statistics_dict = {}
+        for col in voltage_cols:
+            bus_match = re.match(r'(\d+)\s+PU Volt', col)
+            if bus_match:
+                bus_num = bus_match.group(1)
+                values = df[col].tolist()
+                buses_dict[bus_num] = values
+                
+                # Calculate statistics
+                numeric_values = [v for v in values if pd.notna(v)]
+                if numeric_values:
+                    statistics_dict[bus_num] = {
+                        "min": float(min(numeric_values)),
+                        "max": float(max(numeric_values)),
+                        "avg": float(sum(numeric_values) / len(numeric_values))
+                    }
+        
+        # Validate voltages
+        voltage_errors = validate_bus_voltages(df)
+        
+        # Count buses with violations
+        buses_with_violations = len(set(error["bus"] for error in voltage_errors))
+        
+        return {
+            "data": {
+                "datetime": datetimes,
+                "buses": buses_dict
+            },
+            "bus_numbers": bus_numbers,
+            "statistics": statistics_dict,
+            "voltage_errors": voltage_errors,
+            "buses_with_violations_count": buses_with_violations
+        }
+        
+    except Exception as e:
+        logging.error(f"Error processing buses data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error processing buses data: {str(e)}")
+
 @app.post("/api/analyze/generators")
 async def analyze_generators(request: PasteDataRequest):
     try:
@@ -773,6 +926,371 @@ async def update_battery_capacity(request: UpdateBatteryRequest):
     except Exception as e:
         logging.error(f"Error updating battery capacity: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error updating battery capacity: {str(e)}")
+
+def create_chart_image(data: Dict[str, Any], chart_type: str) -> Optional[io.BytesIO]:
+    """Create a Plotly chart and return it as an image buffer."""
+    try:
+        fig = go.Figure()
+        
+        if chart_type == 'branch_loading':
+            # Branch Loading Over Time
+            for branch, values in data.get('branches', {}).items():
+                fig.add_trace(go.Scatter(
+                    x=data.get('datetime', []),
+                    y=values,
+                    mode='lines',
+                    name=branch,
+                    line=dict(width=2)
+                ))
+            fig.update_layout(
+                title='Branch Loading Over Time',
+                xaxis_title='Time',
+                yaxis_title='% of MVA Limit',
+                height=500,
+                margin=dict(l=60, r=40, t=60, b=150),
+                showlegend=True,
+                legend=dict(orientation='h', yanchor='top', y=-0.15, xanchor='center', x=0.5)
+            )
+            # Add limit lines
+            fig.add_hline(y=100, line_dash="dash", line_color="red", line_width=2)
+            fig.add_hline(y=90, line_dash="dash", line_color="orange", line_width=2)
+            
+        elif chart_type == 'battery_capacity':
+            # Battery Capacity by Bus
+            for bus, capacity in data.items():
+                fig.add_trace(go.Scatter(
+                    x=list(range(len(capacity))),
+                    y=capacity,
+                    mode='lines',
+                    name=f'Bus {bus}',
+                    line=dict(width=2)
+                ))
+            fig.update_layout(
+                title='Battery Capacity Over Time',
+                xaxis_title='Timestep',
+                yaxis_title='Capacity (kWh)',
+                height=500,
+                margin=dict(l=60, r=40, t=60, b=150),
+                showlegend=True,
+                legend=dict(orientation='h', yanchor='top', y=-0.15, xanchor='center', x=0.5)
+            )
+            
+        elif chart_type == 'mw_from':
+            # MW From (Reverse Power Flow)
+            for branch, values in data.get('branches', {}).items():
+                fig.add_trace(go.Scatter(
+                    x=data.get('datetime', []),
+                    y=values,
+                    mode='lines',
+                    name=branch,
+                    line=dict(width=2)
+                ))
+            fig.update_layout(
+                title='Branch Power Flow (MW From)',
+                xaxis_title='Time',
+                yaxis_title='Power (MW)',
+                height=500,
+                margin=dict(l=60, r=40, t=60, b=150),
+                showlegend=True,
+                legend=dict(orientation='h', yanchor='top', y=-0.15, xanchor='center', x=0.5)
+            )
+            fig.add_hline(y=0, line_dash="dot", line_color="gray", line_width=2)
+            
+        elif chart_type == 'bus_voltage':
+            # Bus Voltage Profile
+            for bus, values in data.get('buses', {}).items():
+                fig.add_trace(go.Scatter(
+                    x=data.get('datetime', []),
+                    y=values,
+                    mode='lines',
+                    name=f'Bus {bus}',
+                    line=dict(width=2)
+                ))
+            fig.update_layout(
+                title='Bus Voltage Profile (Per Unit)',
+                xaxis_title='Time',
+                yaxis_title='Voltage (p.u.)',
+                height=500,
+                margin=dict(l=60, r=40, t=60, b=150),
+                showlegend=True,
+                legend=dict(orientation='h', yanchor='top', y=-0.15, xanchor='center', x=0.5)
+            )
+            # Add voltage limit lines
+            fig.add_hline(y=0.9, line_dash="dash", line_color="red", line_width=2)
+            fig.add_hline(y=1.1, line_dash="dash", line_color="red", line_width=2)
+        
+        # Export to image
+        img_bytes = pio.to_image(fig, format='png', width=800, height=500)
+        return io.BytesIO(img_bytes)
+        
+    except Exception as e:
+        logging.error(f"Error creating chart {chart_type}: {e}", exc_info=True)
+        return None
+
+@app.post("/api/generate-report")
+async def generate_report(request: Dict[str, Any]):
+    """Generate a PDF report with all charts, battery configuration, errors, warnings, and budget."""
+    try:
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=0.5*inch, leftMargin=0.5*inch, topMargin=0.5*inch, bottomMargin=0.5*inch)
+        
+        story = []
+        styles = getSampleStyleSheet()
+        
+        # Custom styles
+        title_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=24, textColor=colors.HexColor('#1f2937'), spaceAfter=30, alignment=TA_CENTER)
+        heading_style = ParagraphStyle('CustomHeading', parent=styles['Heading2'], fontSize=16, textColor=colors.HexColor('#374151'), spaceAfter=12, spaceBefore=12)
+        
+        # Title
+        story.append(Paragraph("PowerWorld Simulation Report", title_style))
+        story.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
+        story.append(Spacer(1, 20))
+        
+        # Budget Summary
+        if 'budget_summary' in request and request['budget_summary']:
+            budget = request['budget_summary']
+            story.append(Paragraph("Budget Summary", heading_style))
+            
+            budget_data = [
+                ['Metric', 'Value'],
+                ['Total Cost', f"€{budget['total_cost_eur']:,.0f}"],
+                ['Budget Limit', f"€{budget['budget_limit_eur']:,.0f}"],
+                ['Percentage Used', f"{budget['percentage_used']:.1f}%"],
+                ['Status', 'Over Budget' if budget['is_over_budget'] else 'Within Budget']
+            ]
+            
+            budget_table = Table(budget_data, colWidths=[3*inch, 3*inch])
+            budget_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#374151')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 12),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ]))
+            story.append(budget_table)
+            story.append(Spacer(1, 20))
+        
+        # Battery Configuration
+        if 'battery_costs' in request and request['battery_costs']:
+            story.append(Paragraph("Battery Configuration", heading_style))
+            
+            battery_data = [['Bus', 'Type', 'Max Capacity (kWh)', 'Installed (kWh)', 'Cost (€/kWh)', 'Total Cost (€)']]
+            for bus, cost_info in sorted(request['battery_costs'].items(), key=lambda x: int(x[0])):
+                battery_data.append([
+                    f"Bus {bus}",
+                    cost_info['battery_type'],
+                    f"{cost_info['max_capacity_kwh']:.2f}",
+                    f"{cost_info['rounded_capacity_kwh']:.0f}",
+                    f"{cost_info['cost_per_kwh']:.0f}",
+                    f"€{cost_info['total_cost_eur']:,.0f}"
+                ])
+            
+            battery_table = Table(battery_data, colWidths=[0.8*inch, 1.2*inch, 1.3*inch, 1.3*inch, 1.1*inch, 1.1*inch])
+            battery_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#374151')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ]))
+            story.append(battery_table)
+            story.append(Spacer(1, 20))
+        
+        # Errors and Warnings
+        errors = request.get('errors', [])
+        warnings = request.get('warnings', [])
+        reverse_flow_errors = request.get('reverse_flow_errors', [])
+        voltage_errors = request.get('voltage_errors', [])
+        
+        if errors or warnings or reverse_flow_errors or voltage_errors:
+            story.append(Paragraph("Validation Issues", heading_style))
+            
+            if errors or reverse_flow_errors or voltage_errors:
+                story.append(Paragraph("<b>Errors:</b>", styles['Normal']))
+                for err in errors:
+                    if 'message' in err:
+                        story.append(Paragraph(f"• {err['message']}", styles['Normal']))
+                for err in reverse_flow_errors:
+                    story.append(Paragraph(f"• {err['message']}", styles['Normal']))
+                for err in voltage_errors:
+                    story.append(Paragraph(f"• {err['message']}", styles['Normal']))
+                story.append(Spacer(1, 10))
+            
+            if warnings:
+                story.append(Paragraph("<b>Warnings:</b>", styles['Normal']))
+                for warn in warnings:
+                    if 'message' in warn:
+                        story.append(Paragraph(f"• {warn['message']}", styles['Normal']))
+                story.append(Spacer(1, 10))
+        
+        # Statistics
+        if 'statistics' in request and request['statistics']:
+            story.append(PageBreak())
+            story.append(Paragraph("Statistics", heading_style))
+            
+            stats = request['statistics']
+            stats_data = [
+                ['Metric', 'Value'],
+                ['Maximum Loading', f"{stats.get('max', 0):.2f}%"],
+                ['Minimum Loading', f"{stats.get('min', 0):.2f}%"],
+                ['Average Loading', f"{stats.get('avg', 0):.2f}%"],
+                ['Branches Over 100%', str(stats.get('overLimit', 0))],
+                ['Main Line Below 90%', 'Yes' if stats.get('mainLineBelow90', False) else 'No'],
+                ['Main Line Flatness', f"{stats.get('mainLineFlatness', 0):.2f}%" if stats.get('mainLineFlatness') is not None else 'N/A'],
+                ['Branches w/ Reverse Flow', str(stats.get('reverseFlowCount', 0))]
+            ]
+            
+            # Add bus voltage statistics if available
+            if 'buses_with_violations_count' in request:
+                stats_data.append(['Buses w/ Voltage Violations', str(request.get('buses_with_violations_count', 0))])
+            
+            
+            stats_table = Table(stats_data, colWidths=[3*inch, 3*inch])
+            stats_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#374151')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 12),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ]))
+            story.append(stats_table)
+        
+        # Battery Charging/Discharging Schedule
+        if 'battery_table' in request and request['battery_table']:
+            story.append(PageBreak())
+            story.append(Paragraph("Battery Charging/Discharging Schedule", heading_style))
+            story.append(Paragraph("Negative values indicate charging, positive values indicate discharging (MW)", styles['Normal']))
+            story.append(Spacer(1, 10))
+            
+            battery_table_data = request['battery_table']
+            columns = battery_table_data.get('columns', [])
+            data = battery_table_data.get('data', [])
+            metadata = battery_table_data.get('metadata', {})
+            
+            if columns and data:
+                # Create table header with bus numbers
+                header_row = []
+                for col in columns:
+                    if col == 'Date':
+                        header_row.append('Date')
+                    elif col == 'Time':
+                        header_row.append('Time')
+                    elif col in metadata:
+                        header_row.append(f"Bus {metadata[col]}")
+                    else:
+                        header_row.append(col)
+                
+                # Build table data
+                table_data = [header_row]
+                for row in data[:24]:  # Limit to first 24 rows (one day) for space
+                    table_row = []
+                    for col in columns:
+                        value = row.get(col, '')
+                        if col in ['Date', 'Time']:
+                            table_row.append(str(value))
+                        else:
+                            # Format numeric values
+                            try:
+                                table_row.append(f"{float(value):.2f}")
+                            except:
+                                table_row.append(str(value))
+                    table_data.append(table_row)
+                
+                # Calculate column widths dynamically
+                num_cols = len(columns)
+                if num_cols <= 5:
+                    col_width = 6.5*inch / num_cols
+                else:
+                    col_width = 0.8*inch
+                col_widths = [col_width] * num_cols
+                
+                schedule_table = Table(table_data, colWidths=col_widths, repeatRows=1)
+                schedule_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#374151')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 8),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                    ('TOPPADDING', (0, 0), (-1, 0), 8),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.beige, colors.lightgrey])
+                ]))
+                story.append(schedule_table)
+                
+                if len(data) > 24:
+                    story.append(Spacer(1, 10))
+                    story.append(Paragraph(f"<i>Note: Showing first 24 timesteps out of {len(data)} total</i>", styles['Normal']))
+                
+                story.append(Spacer(1, 20))
+        
+        # Add Charts
+        story.append(PageBreak())
+        story.append(Paragraph("Charts", heading_style))
+        
+        # Branch Loading Chart
+        if 'lines_data' in request and request['lines_data']:
+            story.append(Paragraph("Branch Loading Over Time", styles['Heading3']))
+            chart_img = create_chart_image(request['lines_data'], 'branch_loading')
+            if chart_img:
+                img = Image(chart_img, width=6.5*inch, height=4*inch)
+                story.append(img)
+                story.append(Spacer(1, 20))
+        
+        # Battery Capacity Chart
+        if 'battery_capacity' in request and request['battery_capacity']:
+            story.append(Paragraph("Battery Capacity Over Time", styles['Heading3']))
+            chart_img = create_chart_image(request['battery_capacity'], 'battery_capacity')
+            if chart_img:
+                img = Image(chart_img, width=6.5*inch, height=4*inch)
+                story.append(img)
+                story.append(Spacer(1, 20))
+        
+        # MW From Chart
+        if 'mw_from_data' in request and request['mw_from_data'] and request['mw_from_data'].get('branches'):
+            story.append(PageBreak())
+            story.append(Paragraph("Branch Power Flow (MW From)", styles['Heading3']))
+            chart_img = create_chart_image(request['mw_from_data'], 'mw_from')
+            if chart_img:
+                img = Image(chart_img, width=6.5*inch, height=4*inch)
+                story.append(img)
+                story.append(Spacer(1, 20))
+        
+        # Bus Voltage Chart
+        if 'buses_data' in request and request['buses_data'] and request['buses_data'].get('buses'):
+            story.append(PageBreak())
+            story.append(Paragraph("Bus Voltage Profile (Per Unit)", styles['Heading3']))
+            story.append(Paragraph("Voltage limits: 0.9 - 1.1 p.u.", styles['Normal']))
+            story.append(Spacer(1, 10))
+            chart_img = create_chart_image(request['buses_data'], 'bus_voltage')
+            if chart_img:
+                img = Image(chart_img, width=6.5*inch, height=4*inch)
+                story.append(img)
+                story.append(Spacer(1, 20))
+        
+        # Build PDF
+        doc.build(story)
+        buffer.seek(0)
+        
+        return StreamingResponse(
+            buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=powerworld_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"}
+        )
+        
+    except Exception as e:
+        logging.error(f"Error generating report: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error generating report: {str(e)}")
 
 @app.get("/api/bus-config")
 async def get_bus_config_api():
