@@ -7,12 +7,9 @@ RUN npm ci
 
 COPY frontend/ ./
 
-# Build for production
 RUN npm run build
 
-# Expose port (Render uses PORT env var)
 EXPOSE 3000
 
-# Start production server
 CMD ["npm", "start"]
 

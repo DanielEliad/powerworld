@@ -2,11 +2,21 @@
 
 import { useState, useRef, useEffect } from 'react'
 import dynamic from 'next/dynamic'
+import { 
+  AnalysisResult, 
+  LinesData, 
+  GeneratorsData, 
+  BusesData,
+  BatteryTable,
+  BatteryCost,
+  BudgetSummary,
+  ValidationError,
+  ValidationErrorType,
+  parseValidationError
+} from './types'
 
-// Load Plotly using a more reliable method that avoids chunk loading issues
 const Plot = dynamic(
   () => import('react-plotly.js').catch(() => {
-    // Fallback: return a placeholder component if import fails
     return { default: () => <div className="text-gray-400 p-4">Chart library loading...</div> }
   }),
   { 
@@ -15,108 +25,19 @@ const Plot = dynamic(
   }
 )
 
-interface BranchData {
-  [key: string]: number[]
+enum LocalStorageKey {
+  LINES_DATA = 'powerworld_lines_data',
+  GENERATORS_DATA = 'powerworld_generators_data',
+  BUSES_DATA = 'powerworld_buses_data'
 }
 
-interface Statistics {
-  [branch: string]: {
-    max: number
-    min: number
-    avg: number
-    current: number | null
-  }
-}
-
-interface ReverseFlowError {
-  branch: string
-  min_mw: number
-  error_type: string
-  message: string
-}
-
-interface LinesData {
-  data: {
-    datetime: string[]
-    branches: BranchData
-  }
-  statistics: Statistics
-  branch_names: string[]
-  main_line_below_90: boolean
-  main_line_flatness: number | null
-  mw_from_data?: {
-    datetime: string[]
-    branches: BranchData
-  }
-  mw_from_branch_names?: string[]
-  reverse_flow_errors?: ReverseFlowError[]
-  branches_with_reverse_flow_count?: number
-}
-
-interface BusVoltageError {
-  bus: string
-  timestep: number
-  voltage: number
-  error_type: string
-  message: string
-}
-
-interface BusesData {
-  data: {
-    datetime: string[]
-    buses: { [key: string]: number[] }
-  }
-  bus_numbers: string[]
-  voltage_errors?: BusVoltageError[]
-  buses_with_violations_count?: number
-  statistics?: {
-    [bus: string]: {
-      min: number
-      max: number
-      avg: number
-    }
-  }
-}
-
-interface BatteryCost {
-  max_capacity_kwh: number
-  rounded_capacity_kwh: number
-  cost_per_kwh: number
-  total_cost_eur: number
-  battery_type: string
-  min_size_kwh: number
-  max_size_kwh: number
-}
-
-interface BudgetSummary {
-  total_cost_eur: number
-  budget_limit_eur: number
-  percentage_used: number
-  is_over_budget: boolean
-}
-
-interface GeneratorsData {
-  columns: string[]
-  rows: any[][]
-  data: Record<string, any>[]
-  datetime: string[]
-  generators: { [key: string]: any[] }
-  generator_columns: string[]
-  battery_capacity?: { [bus: string]: number[] }
-  battery_by_bus?: { [bus: string]: string[] }
-  battery_table?: {
-    columns: string[]
-    data: Record<string, any>[]
-    metadata: { [genName: string]: string }
-  }
-  battery_costs?: { [bus: string]: BatteryCost }
-  budget_summary?: BudgetSummary
-}
-
-interface AnalysisResult {
-  lines?: LinesData
-  generators?: GeneratorsData
-  buses?: BusesData
+enum ApiEndpoint {
+  ANALYZE_LINES = '/api/analyze/lines',
+  ANALYZE_GENERATORS = '/api/analyze/generators',
+  ANALYZE_BUSES = '/api/analyze/buses',
+  UPDATE_BATTERY = '/api/analyze/generators/update-battery',
+  RECONSTRUCT_TABLE = '/api/analyze/generators/reconstruct',
+  GENERATE_REPORT = '/api/generate-report'
 }
 
 export default function Home() {
@@ -125,27 +46,11 @@ export default function Home() {
   const [busesPasteData, setBusesPasteData] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>('')
-  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null)
+  const [analysisResult, setAnalysisResult] = useState<AnalysisResult>(AnalysisResult.empty())
   const [selectedBranches, setSelectedBranches] = useState<Set<string>>(new Set())
   const [generatorData, setGeneratorData] = useState<Record<string, any>[]>([])
   const [showPastePanel, setShowPastePanel] = useState(true)
-  const [batteryErrors, setBatteryErrors] = useState<Array<{
-    bus: string;
-    timestep: number;
-    capacity: number;
-    error_type?: string;
-    min_size?: number;
-    max_size?: number;
-    power?: number;
-    max_power_rating?: number;
-    installed_capacity?: number;
-    max_capacity?: number;
-    percentage_remaining?: number;
-    rounded_capacity?: number;
-    wasted_capacity?: number;
-    waste_percentage?: number;
-    message?: string;
-  }>>([])
+  const [batteryErrors, setBatteryErrors] = useState<ValidationError[]>([])
   const [showErrorsExpanded, setShowErrorsExpanded] = useState(false)
   const [showBudgetExpanded, setShowBudgetExpanded] = useState(false)
   const linesTextareaRef = useRef<HTMLTextAreaElement>(null)
@@ -210,15 +115,16 @@ export default function Home() {
       // Auto-process if data exists
       if (savedLines) {
         try {
-          const response = await fetch(`${API_URL}/api/analyze/lines`, {
+          const response = await fetch(`${API_URL}${ApiEndpoint.ANALYZE_LINES}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ data: savedLines }),
           })
           if (response.ok) {
-            const data = await response.json()
-            setAnalysisResult(prev => ({ ...prev, lines: data }))
-            setSelectedBranches(new Set(data.branch_names))
+            const json = await response.json()
+            const lines = LinesData.fromJSON(json)
+            setAnalysisResult(prev => prev.withLines(lines))
+            setSelectedBranches(new Set(lines.branch_names))
           }
         } catch (err) {
           console.error('Error auto-loading lines:', err)
@@ -227,18 +133,17 @@ export default function Home() {
       
       if (savedGenerators) {
         try {
-          const response = await fetch(`${API_URL}/api/analyze/generators`, {
+          const response = await fetch(`${API_URL}${ApiEndpoint.ANALYZE_GENERATORS}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ data: savedGenerators }),
           })
           if (response.ok) {
-            const data = await response.json()
-            if (data.validation_errors) {
-              setBatteryErrors(data.validation_errors)
-            }
-            setAnalysisResult(prev => ({ ...prev, generators: data }))
-            setGeneratorData([...data.data])
+            const json = await response.json()
+            const generators = GeneratorsData.fromJSON(json)
+            setBatteryErrors(generators.validation_errors)
+            setAnalysisResult(prev => prev.withGenerators(generators))
+            setGeneratorData([...generators.data])
           }
         } catch (err) {
           console.error('Error auto-loading generators:', err)
@@ -247,14 +152,15 @@ export default function Home() {
       
       if (savedBuses) {
         try {
-          const response = await fetch(`${API_URL}/api/analyze/buses`, {
+          const response = await fetch(`${API_URL}${ApiEndpoint.ANALYZE_BUSES}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ data: savedBuses }),
           })
           if (response.ok) {
-            const data = await response.json()
-            setAnalysisResult(prev => ({ ...prev, buses: data }))
+            const json = await response.json()
+            const buses = BusesData.fromJSON(json)
+            setAnalysisResult(prev => prev.withBuses(buses))
           }
         } catch (err) {
           console.error('Error auto-loading buses:', err)
@@ -289,9 +195,10 @@ export default function Home() {
         throw new Error(errorData.detail || 'Failed to process lines data')
       }
 
-      const data = await response.json()
-      setAnalysisResult(prev => ({ ...prev, lines: data }))
-      setSelectedBranches(new Set(data.branch_names))
+      const json = await response.json()
+      const lines = LinesData.fromJSON(json)
+      setAnalysisResult(prev => prev.withLines(lines))
+      setSelectedBranches(new Set(lines.branch_names))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred')
     } finally {
@@ -335,15 +242,11 @@ export default function Home() {
         throw new Error('Invalid response format from server')
       }
       
-      // Set validation errors from backend
-      if (data.validation_errors) {
-        setBatteryErrors(data.validation_errors)
-      } else {
-        setBatteryErrors([])
-      }
-      
-      setAnalysisResult(prev => ({ ...prev, generators: data }))
-      setGeneratorData([...data.data])
+      const json = await response.json()
+      const generators = GeneratorsData.fromJSON(json)
+      setBatteryErrors(generators.validation_errors)
+      setAnalysisResult(prev => prev.withGenerators(generators))
+      setGeneratorData([...generators.data])
     } catch (err) {
       console.error('Error processing generators:', err)
       setError(err instanceof Error ? err.message : 'An error occurred')
@@ -375,8 +278,9 @@ export default function Home() {
         throw new Error(errorData.detail || 'Failed to process buses data')
       }
 
-      const data = await response.json()
-      setAnalysisResult(prev => ({ ...prev, buses: data }))
+      const json = await response.json()
+      const buses = BusesData.fromJSON(json)
+      setAnalysisResult(prev => prev.withBuses(buses))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred')
     } finally {
@@ -401,21 +305,14 @@ export default function Home() {
     // timestep 0 = initial capacity, timestep 1 = after row 0, timestep 2 = after row 1, etc.
     // So if error is at timestep N, the problematic row is N-1
     return batteryErrors.some(err => {
-      if (err.bus !== busNum) return false
-      // For constraint errors (above_max_size), timestep points to where max occurs
-      // For negative capacity errors, timestep N means capacity went negative after processing row N-1
-      if (err.error_type === "above_max_size") {
-        // Highlight the row where max capacity occurs (timestep - 1)
-        return err.timestep > 0 && rowIndex === err.timestep - 1
-      } else {
-        // For negative capacity, highlight row N-1
-        return err.timestep > 0 && rowIndex === err.timestep - 1
-      }
+      if (err.element !== busNum) return false
+      if (!('timestep' in err)) return false
+      return err.timestep > 0 && rowIndex === err.timestep - 1
     })
   }
 
   const getHourFromTimestep = (timestep: number): string => {
-    if (!analysisResult?.generators?.datetime) return `timestep ${timestep}`
+    if (!analysisResult.generators) return `timestep ${timestep}`
     // timestep 0 = initial capacity (before any data), timestep 1 = after first row, etc.
     // datetime array has n+1 entries (including extra 00:00)
     // timestep 0 should show the first datetime, timestep 1 should show the second, etc.
@@ -457,7 +354,7 @@ export default function Home() {
   }
 
   const updateBatteryValue = async (rowIndex: number, genName: string, value: string) => {
-    if (!analysisResult?.generators?.battery_table) return
+    if (!analysisResult.generators) return
     
     const numValue = parseFloat(value)
     const newValue = isNaN(numValue) ? 0 : numValue
@@ -466,11 +363,11 @@ export default function Home() {
   }
 
   const incrementBatteryValue = async (rowIndex: number, genName: string, delta: number) => {
-    if (!analysisResult?.generators?.battery_table) return
-    
-    const currentValue = typeof analysisResult.generators.battery_table.data[rowIndex]?.[genName] === 'number' 
+    if (!analysisResult.generators) return
+
+    const currentValue = typeof analysisResult.generators.battery_table.data[rowIndex][genName] === 'number'
       ? analysisResult.generators.battery_table.data[rowIndex][genName] 
-      : parseFloat(String(analysisResult.generators.battery_table.data[rowIndex]?.[genName] ?? 0)) || 0
+      : parseFloat(String(analysisResult.generators.battery_table.data[rowIndex][genName] || 0)) || 0
     
     // Round to 2 decimal places to avoid floating point precision issues
     const newValue = Math.round((currentValue + delta) * 100) / 100
@@ -478,32 +375,40 @@ export default function Home() {
   }
 
   const updateBatteryValueInternal = async (rowIndex: number, genName: string, newValue: number) => {
-    if (!analysisResult?.generators?.battery_table) return
-    
-    // Update local state immediately for UI responsiveness
-    const newBatteryTableData = [...(analysisResult.generators.battery_table.data || [])]
+    if (!analysisResult.generators) return
+
+    const newBatteryTableData = [...analysisResult.generators.battery_table.data]
     newBatteryTableData[rowIndex] = {
       ...newBatteryTableData[rowIndex],
       [genName]: newValue
     }
     
     setAnalysisResult(prev => {
-      if (!prev?.generators?.battery_table) return prev
-      return {
-        ...prev,
-        generators: {
-          ...prev.generators,
-          battery_table: {
-            ...prev.generators.battery_table,
-            data: newBatteryTableData
-          }
-        }
-      }
+      if (!prev.generators) return prev
+      const updatedGenerators = new GeneratorsData(
+        prev.generators.columns,
+        prev.generators.rows,
+        prev.generators.data,
+        prev.generators.datetime,
+        prev.generators.generators,
+        prev.generators.generator_columns,
+        prev.generators.battery_capacity,
+        prev.generators.battery_by_bus,
+        new BatteryTable(
+          prev.generators.battery_table.columns,
+          newBatteryTableData,
+          prev.generators.battery_table.metadata
+        ),
+        prev.generators.validation_errors,
+        prev.generators.battery_costs,
+        prev.generators.budget_summary
+      )
+      return prev.withGenerators(updatedGenerators)
     })
     
     // Recalculate capacity on backend
     try {
-      const response = await fetch(`${API_URL}/api/analyze/generators/update-battery`, {
+      const response = await fetch(`${API_URL}${ApiEndpoint.UPDATE_BATTERY}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -515,26 +420,28 @@ export default function Home() {
       })
       
       if (response.ok) {
-        const updated = await response.json()
-        
-        // Set validation errors from backend
-        if (updated.validation_errors) {
-          setBatteryErrors(updated.validation_errors)
-        } else {
-          setBatteryErrors([])
-        }
+        const json = await response.json()
+        setBatteryErrors((json.validation_errors || []).map((e: any) => parseValidationError(e)))
         
         setAnalysisResult(prev => {
-          if (!prev?.generators) return prev
-          return {
-            ...prev,
-            generators: {
-              ...prev.generators,
-              battery_capacity: updated.battery_capacity,
-              battery_costs: updated.battery_costs,
-              budget_summary: updated.budget_summary
-            }
-          }
+          if (!prev.generators) return prev
+          const updatedGenerators = new GeneratorsData(
+            prev.generators.columns,
+            prev.generators.rows,
+            prev.generators.data,
+            prev.generators.datetime,
+            prev.generators.generators,
+            prev.generators.generator_columns,
+            json.battery_capacity,
+            prev.generators.battery_by_bus,
+            prev.generators.battery_table,
+            (json.validation_errors || []).map((e: any) => parseValidationError(e)),
+            Object.fromEntries(
+              Object.entries(json.battery_costs).map(([k, v]) => [k, BatteryCost.fromJSON(v)])
+            ),
+            BudgetSummary.fromJSON(json.budget_summary)
+          )
+          return prev.withGenerators(updatedGenerators)
         })
       }
     } catch (err) {
@@ -543,11 +450,10 @@ export default function Home() {
   }
 
   const exportBatteryToClipboard = async () => {
-    if (!analysisResult?.generators?.battery_table || !analysisResult.generators.columns || !analysisResult.generators.data) return
+    if (!analysisResult.generators) return
 
     try {
-      // Send battery table data to backend to reconstruct full table
-      const response = await fetch(`${API_URL}/api/analyze/generators/reconstruct`, {
+      const response = await fetch(`${API_URL}${ApiEndpoint.RECONSTRUCT_TABLE}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -575,37 +481,37 @@ export default function Home() {
 
     try {
       // Prepare data for report
-      const batteryErrors = analysisResult.generators?.validation_errors || []
+      const batteryErrors = analysisResult.generators ? analysisResult.generators.validation_errors : []
       const errors = batteryErrors.filter(e => 
-        e.error_type !== 'battery_not_fully_used' && 
-        e.error_type !== 'battery_underutilized_rounding'
+        e.type !== ValidationErrorType.BATTERY_NOT_FULLY_USED &&
+        e.type !== ValidationErrorType.BATTERY_UNDERUTILIZED_ROUNDING
       )
       const warnings = batteryErrors.filter(e => 
-        e.error_type === 'battery_not_fully_used' || 
-        e.error_type === 'battery_underutilized_rounding'
+        e.type === ValidationErrorType.BATTERY_NOT_FULLY_USED ||
+        e.type === ValidationErrorType.BATTERY_UNDERUTILIZED_ROUNDING
       )
-      const reverseFlowErrors = analysisResult.lines?.reverse_flow_errors || []
-      const voltageErrors = analysisResult.buses?.voltage_errors || []
+      const reverseFlowErrors = analysisResult.lines ? analysisResult.lines.reverse_flow_errors : []
+      const voltageErrors = analysisResult.buses ? analysisResult.buses.voltage_errors : []
 
       const overallStats = getOverallStats()
       
       const reportData = {
-        budget_summary: analysisResult.generators?.budget_summary,
-        battery_costs: analysisResult.generators?.battery_costs,
+        budget_summary: analysisResult.generators ? analysisResult.generators.budget_summary : null,
+        battery_costs: analysisResult.generators ? analysisResult.generators.battery_costs : null,
         errors: errors,
         warnings: warnings,
         reverse_flow_errors: reverseFlowErrors,
         voltage_errors: voltageErrors,
         statistics: overallStats,
-        lines_data: analysisResult.lines?.data,
-        battery_capacity: analysisResult.generators?.battery_capacity,
-        mw_from_data: analysisResult.lines?.mw_from_data,
-        battery_table: analysisResult.generators?.battery_table,
-        buses_data: analysisResult.buses?.data,
-        buses_with_violations_count: analysisResult.buses?.buses_with_violations_count
+        lines_data: analysisResult.lines ? analysisResult.lines.data : null,
+        battery_capacity: analysisResult.generators ? analysisResult.generators.battery_capacity : null,
+        mw_from_data: analysisResult.lines ? analysisResult.lines.mw_from_data : null,
+        battery_table: analysisResult.generators ? analysisResult.generators.battery_table : null,
+        buses_data: analysisResult.buses ? analysisResult.buses.data : null,
+        buses_with_violations_count: analysisResult.buses ? analysisResult.buses.buses_with_violations_count : 0
       }
 
-      const response = await fetch(`${API_URL}/api/generate-report`, {
+      const response = await fetch(`${API_URL}${ApiEndpoint.GENERATE_REPORT}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -634,7 +540,7 @@ export default function Home() {
   }
 
   const getTimeSeriesTraces = () => {
-    if (!analysisResult?.lines) return []
+    if (!analysisResult.lines) return []
 
     const colors = ['#60a5fa', '#34d399', '#fbbf24', '#f472b6', '#a78bfa', '#fb7185', '#4ade80', '#22d3ee']
     let colorIndex = 0
@@ -652,10 +558,9 @@ export default function Home() {
   }
 
   const getGeneratorTraces = () => {
-    if (!analysisResult?.generators || !analysisResult.generators.datetime) return []
-    
-    // Use generatorData if available, otherwise use data from analysisResult
-    const dataToUse = generatorData.length > 0 ? generatorData : (analysisResult.generators.data || [])
+    if (!analysisResult.generators) return []
+
+    const dataToUse = generatorData.length > 0 ? generatorData : analysisResult.generators.data
     if (dataToUse.length === 0) return []
 
     const genColumns = analysisResult.generators.generator_columns || []
@@ -682,7 +587,7 @@ export default function Home() {
   }
 
   const getBatteryCapacityTraces = () => {
-    if (!analysisResult?.generators || !analysisResult.generators.datetime || !analysisResult.generators.battery_capacity) return []
+    if (!analysisResult.generators) return []
 
     const batteryCapacity = analysisResult.generators.battery_capacity
     const busNumbers = Object.keys(batteryCapacity).sort((a, b) => parseInt(a) - parseInt(b))
@@ -703,7 +608,7 @@ export default function Home() {
   }
 
   const getOverallStats = () => {
-    if (!analysisResult?.lines) return null
+    if (!analysisResult.lines) return null
 
     const stats = Object.values(analysisResult.lines.statistics)
     const max = Math.max(...stats.map(s => s.max))
@@ -772,7 +677,7 @@ export default function Home() {
       <nav className="sticky top-0 z-50 bg-gray-800 border-b border-gray-700 shadow-lg">
         <div className="w-full px-4 py-3">
           <div className="flex items-center justify-between gap-3">
-            {analysisResult?.generators?.budget_summary ? (
+            {analysisResult.generators ? (
               <div className="relative" ref={budgetPanelRef}>
                 <div 
                   className="bg-gray-700 border border-gray-600 rounded px-3 py-2 cursor-pointer hover:bg-gray-600 transition-colors"
@@ -808,7 +713,7 @@ export default function Home() {
                     </span>
                   </div>
                 </div>
-                {showBudgetExpanded && analysisResult?.generators?.battery_costs && (
+                {showBudgetExpanded && analysisResult.generators && (
                   <div className="absolute top-full left-0 right-0 mt-1 bg-gray-800 border border-gray-600 rounded-lg shadow-xl z-50 max-h-96 overflow-y-auto">
                     <div className="p-4">
                       <div className="text-gray-200 font-semibold text-sm mb-3">Battery Installation Details:</div>
@@ -863,17 +768,15 @@ export default function Home() {
             )}
             {(() => {
               const errors = batteryErrors.filter(e => 
-                e.error_type !== 'battery_not_fully_used' && 
-                e.error_type !== 'battery_underutilized_rounding'
+        e.type !== ValidationErrorType.BATTERY_NOT_FULLY_USED &&
+        e.type !== ValidationErrorType.BATTERY_UNDERUTILIZED_ROUNDING
               )
               const warnings = batteryErrors.filter(e => 
-                e.error_type === 'battery_not_fully_used' || 
-                e.error_type === 'battery_underutilized_rounding'
+        e.type === ValidationErrorType.BATTERY_NOT_FULLY_USED ||
+        e.type === ValidationErrorType.BATTERY_UNDERUTILIZED_ROUNDING
               )
-              // Include reverse flow errors from lines data
-              const reverseFlowErrors = analysisResult?.lines?.reverse_flow_errors || []
-              // Include voltage errors from buses data
-              const voltageErrors = analysisResult?.buses?.voltage_errors || []
+              const reverseFlowErrors = analysisResult.lines?.reverse_flow_errors || []
+              const voltageErrors = analysisResult.buses?.voltage_errors || []
               const hasErrors = errors.length > 0 || reverseFlowErrors.length > 0 || voltageErrors.length > 0
               const hasWarnings = warnings.length > 0
               
@@ -916,27 +819,19 @@ export default function Home() {
                           <>
                             <div className="text-red-400 font-semibold text-sm mb-2">Validation Errors:</div>
                             <div className="space-y-1 mb-3">
-                              {errors.map((err, idx) => {
-                                let errorMessage = `Bus ${err.bus} - ${getHourFromTimestep(err.timestep)}: Capacity = ${err.capacity.toFixed(2)} kWh`
-                                if (err.error_type === "negative_capacity") {
-                                  errorMessage += " (must be ≥ 0)"
-                                } else if (err.error_type === "above_max_size" && err.max_size !== undefined) {
-                                  errorMessage += ` (exceeds max ${err.max_size} kWh)`
-                                } else if (err.error_type === "exceeds_power_rating" && err.power !== undefined && err.max_power_rating !== undefined) {
-                                  errorMessage = `Bus ${err.bus} - ${getHourFromTimestep(err.timestep)}: Power ${Math.abs(err.power).toFixed(3)} MW exceeds 1C rate limit ${err.max_power_rating.toFixed(3)} MW`
-                                } else if (err.message) {
-                                  errorMessage = err.message
-                                }
-                                return (
-                                  <div 
-                                    key={idx} 
-                                    onClick={() => scrollToBatteryCell(err.bus, err.timestep)}
-                                    className="text-red-300 text-xs py-1 px-2 bg-red-900/20 rounded cursor-pointer hover:bg-red-900/40 transition-colors"
-                                  >
-                                    {errorMessage}
-                                  </div>
-                                )
-                              })}
+                              {errors.map((err, idx) => (
+                                <div
+                                  key={idx}
+                                  onClick={() => {
+                                    if ('timestep' in err) {
+                                      scrollToBatteryCell(err.element, err.timestep)
+                                    }
+                                  }}
+                                  className="text-red-300 text-xs py-1 px-2 bg-red-900/20 rounded cursor-pointer hover:bg-red-900/40 transition-colors"
+                                >
+                                  {err.message}
+                                </div>
+                              ))}
                               {reverseFlowErrors.map((err, idx) => (
                                 <div 
                                   key={`reverse-${idx}`}
@@ -989,7 +884,7 @@ export default function Home() {
                   📄 Generate Report
                 </button>
               )}
-              {analysisResult?.generators?.battery_table && analysisResult.generators.battery_table.data.length > 0 && (
+              {analysisResult.generators && analysisResult.generators.battery_table.data.length > 0 && (
                 <button
                   onClick={exportBatteryToClipboard}
                   className="px-3 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors text-sm font-medium"
@@ -1002,13 +897,13 @@ export default function Home() {
                 <button
                   onClick={() => {
                     if (confirm('Clear all saved data? This will remove all charts and paste data.')) {
-                      localStorage.removeItem('powerworld_lines_data')
-                      localStorage.removeItem('powerworld_generators_data')
-                      localStorage.removeItem('powerworld_buses_data')
+                      localStorage.removeItem(LocalStorageKey.LINES_DATA)
+                      localStorage.removeItem(LocalStorageKey.GENERATORS_DATA)
+                      localStorage.removeItem(LocalStorageKey.BUSES_DATA)
                       setLinesPasteData('')
                       setGeneratorsPasteData('')
                       setBusesPasteData('')
-                      setAnalysisResult(null)
+                      setAnalysisResult(AnalysisResult.empty())
                       setBatteryErrors([])
                       setGeneratorData([])
                     }
@@ -1157,7 +1052,7 @@ export default function Home() {
                 </div>
                 <p className="text-xs text-gray-500 mt-1">Lower is flatter</p>
               </div>
-              {analysisResult?.lines?.mw_from_data && (
+              {analysisResult.lines && (
                 <div className={`bg-gray-800 border p-4 rounded ${overallStats.reverseFlowCount === 0 ? 'border-green-600' : 'border-yellow-600'}`}>
                   <h3 className="text-sm text-gray-400 mb-1">Branches w/ Reverse Flow</h3>
                   <div className={`text-2xl font-medium ${overallStats.reverseFlowCount === 0 ? 'text-green-400' : 'text-yellow-400'}`}>
@@ -1166,11 +1061,11 @@ export default function Home() {
                   <p className="text-xs text-gray-500 mt-1">Negative power flow</p>
                 </div>
               )}
-              {analysisResult?.buses?.data && (
-                <div className={`bg-gray-800 border p-4 rounded ${(analysisResult.buses.buses_with_violations_count || 0) === 0 ? 'border-green-600' : 'border-red-600'}`}>
+              {analysisResult.buses && (
+                <div className={`bg-gray-800 border p-4 rounded ${analysisResult.buses.buses_with_violations_count === 0 ? 'border-green-600' : 'border-red-600'}`}>
                   <h3 className="text-sm text-gray-400 mb-1">Buses w/ Voltage Violations</h3>
-                  <div className={`text-2xl font-medium ${(analysisResult.buses.buses_with_violations_count || 0) === 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {analysisResult.buses.buses_with_violations_count || 0}
+                  <div className={`text-2xl font-medium ${analysisResult.buses.buses_with_violations_count === 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {analysisResult.buses.buses_with_violations_count}
                   </div>
                   <p className="text-xs text-gray-500 mt-1">Outside 0.9-1.1 p.u.</p>
                 </div>
@@ -1265,7 +1160,7 @@ export default function Home() {
           )}
 
           {/* MW From Branches (Reverse Power Flow Detection) */}
-          {analysisResult?.lines?.mw_from_data && analysisResult.lines.mw_from_branch_names && analysisResult.lines.mw_from_branch_names.length > 0 && (
+          {analysisResult.lines && analysisResult.lines.mw_from_branch_names.length > 0 && (
             <div className="bg-gray-800 border border-gray-700 p-4 rounded">
               <h2 className="text-lg font-medium text-gray-200 mb-4">
                 Branch Power Flow (MW From)
@@ -1320,7 +1215,7 @@ export default function Home() {
           )}
 
           {/* Bus Voltage Profile */}
-          {analysisResult?.buses?.data && analysisResult.buses.bus_numbers && analysisResult.buses.bus_numbers.length > 0 && (
+          {analysisResult.buses && analysisResult.buses.bus_numbers.length > 0 && (
             <div className="bg-gray-800 border border-gray-700 p-4 rounded">
               <h2 className="text-lg font-medium text-gray-200 mb-4">
                 Bus Voltage Profile (Per Unit)
@@ -1398,7 +1293,7 @@ export default function Home() {
             </div>
           )}
 
-          {analysisResult?.generators?.battery_capacity && Object.keys(analysisResult.generators.battery_capacity).length > 0 && (
+          {analysisResult.generators && Object.keys(analysisResult.generators.battery_capacity).length > 0 && (
             <div className="bg-gray-800 border border-gray-700 p-4 rounded">
               <h2 className="text-lg font-medium text-gray-200 mb-4">
                 Battery Capacity by Bus
@@ -1423,7 +1318,7 @@ export default function Home() {
           )}
         </div>
 
-        {analysisResult?.generators && (generatorData.length > 0 || (analysisResult.generators.data && analysisResult.generators.data.length > 0)) && (
+        {analysisResult.generators && (generatorData.length > 0 || analysisResult.generators.data.length > 0) && (
           <div className="mt-8 space-y-6">
             {analysisResult.generators.battery_table && analysisResult.generators.battery_table.data.length > 0 && (
               <div className="bg-gray-800 border border-gray-700 p-4 rounded">
@@ -1440,7 +1335,7 @@ export default function Home() {
                       <tr className="border-b border-gray-700">
                         {analysisResult.generators.battery_table.columns.map((col) => {
                           const isBatteryCol = col !== 'Date' && col !== 'Time'
-                          const busNum = isBatteryCol ? analysisResult.generators.battery_table!.metadata[col] : null
+                          const busNum = isBatteryCol ? analysisResult.generators!.battery_table.metadata[col] : null
                           return (
                             <th key={col} className="text-left px-1 py-1 text-xs font-medium text-gray-300 border-r border-gray-700 last:border-r-0">
                               {col === 'Date' ? 'Date' : col === 'Time' ? 'Time' : `Bus ${busNum}`}
@@ -1452,9 +1347,9 @@ export default function Home() {
                     <tbody>
                       {analysisResult.generators.battery_table.data.map((row, rowIndex) => (
                         <tr key={rowIndex} className="border-b border-gray-700 hover:bg-gray-700/50">
-                          {analysisResult.generators.battery_table!.columns.map((col) => {
+                          {analysisResult.generators!.battery_table.columns.map((col) => {
                             const isBatteryCol = col !== 'Date' && col !== 'Time'
-                            const busNum = isBatteryCol ? analysisResult.generators.battery_table!.metadata[col] : null
+                            const busNum = isBatteryCol ? analysisResult.generators!.battery_table.metadata[col] : null
                             const hasError = isBatteryCol && isCellInError(rowIndex, col, busNum)
                             const cellId = isBatteryCol && busNum ? `battery-cell-${busNum}-${rowIndex}` : undefined
                             return (

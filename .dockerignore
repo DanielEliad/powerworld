@@ -1,3 +1,4 @@
+# Python
 __pycache__
 *.pyc
 *.pyo
@@ -8,19 +9,48 @@ __pycache__
 *.egg-info
 dist
 build
+backend/__pycache__
+
+# Environment
 .env
 .venv
 venv/
 ENV/
 env/
+
+# Git
 .git
 .gitignore
+
+# Documentation
 README.md
 *.md
+
+# IDE
 .DS_Store
 .vscode
 .idea
+
+# Logs
 *.log
+
+# Uploads
 uploads/*
 !uploads/.gitkeep
 
+# Node
+frontend/node_modules
+frontend/.next
+backend/node_modules
+
+# Build artifacts
+frontend/.next/cache
+frontend/.next/static
+frontend/.next/server
+frontend/out
+frontend/build
+
+# Misc
+.direnv/
+.cache
+.next/
