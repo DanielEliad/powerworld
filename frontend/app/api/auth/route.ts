@@ -1,39 +1,41 @@
 import { NextResponse } from 'next/server'
 import jwt from 'jsonwebtoken'
 
-const PASSWORD = process.env.APP_PASSWORD
-const JWT_SECRET = process.env.JWT_SECRET
-const IS_PRODUCTION = process.env.NODE_ENV === 'production'
-
-if (!PASSWORD) {
-  throw new Error('APP_PASSWORD environment variable is required')
-}
-
-if (!JWT_SECRET) {
-  throw new Error('JWT_SECRET environment variable is required')
-}
-
-if (IS_PRODUCTION) {
-  if (PASSWORD.length < 8) {
-    console.warn('⚠️  WARNING: APP_PASSWORD is too short (minimum 8 characters recommended)')
-  }
-  if (JWT_SECRET.length < 32) {
-    console.warn('⚠️  WARNING: JWT_SECRET is too short (minimum 32 characters recommended)')
-  }
-  const weakPasswords = ['password', 'admin', 'powerworld', '12345678', 'powerworld2024']
-  if (weakPasswords.some(weak => PASSWORD.toLowerCase().includes(weak))) {
-    console.error('❌ ERROR: APP_PASSWORD appears to be a weak/default password!')
-  }
-}
-
 export async function POST(request: Request) {
+  const PASSWORD = process.env.APP_PASSWORD
+  const JWT_SECRET = process.env.JWT_SECRET
+  const IS_PRODUCTION = process.env.NODE_ENV === 'production'
+
+  if (!PASSWORD) {
+    console.error('❌ APP_PASSWORD environment variable is required')
+    return NextResponse.json({ error: 'Server configuration error' }, { status: 500 })
+  }
+
+  if (!JWT_SECRET) {
+    console.error('❌ JWT_SECRET environment variable is required')
+    return NextResponse.json({ error: 'Server configuration error' }, { status: 500 })
+  }
+
+  if (IS_PRODUCTION) {
+    if (PASSWORD.length < 8) {
+      console.warn('⚠️  WARNING: APP_PASSWORD is too short (minimum 8 characters recommended)')
+    }
+    if (JWT_SECRET.length < 32) {
+      console.warn('⚠️  WARNING: JWT_SECRET is too short (minimum 32 characters recommended)')
+    }
+    const weakPasswords = ['password', 'admin', 'powerworld', '12345678', 'powerworld2024']
+    if (weakPasswords.some(weak => PASSWORD.toLowerCase().includes(weak))) {
+      console.error('❌ ERROR: APP_PASSWORD appears to be a weak/default password!')
+    }
+  }
+
   try {
     const { password } = await request.json()
     
     if (password === PASSWORD) {
       const token = jwt.sign(
         { authenticated: true, timestamp: Date.now() },
-        JWT_SECRET!,
+        JWT_SECRET,
         { expiresIn: '7d' }
       )
       
