@@ -1,5 +1,4 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -21,38 +20,6 @@ import plotly.graph_objects as go
 import plotly.io as pio
 
 app = FastAPI(title="PowerWorld Simulation Analyzer")
-
-# CORS Configuration - Use environment variable for security
-# In production, set ALLOWED_ORIGINS to your specific frontend URL
-ALLOWED_ORIGINS_STR = os.getenv("ALLOWED_ORIGINS")
-
-if not ALLOWED_ORIGINS_STR:
-    # Development fallback
-    if os.getenv("NODE_ENV") == "production":
-        raise ValueError("ALLOWED_ORIGINS environment variable is required in production")
-    ALLOWED_ORIGINS_STR = "http://localhost:3000"
-    logging.warning("⚠️  Using default CORS origin (development mode): http://localhost:3000")
-
-ALLOWED_ORIGINS = [origin.strip() for origin in ALLOWED_ORIGINS_STR.split(",")]
-
-# Validate CORS origins for security
-for origin in ALLOWED_ORIGINS:
-    if origin == "*":
-        logging.error("❌ ERROR: Wildcard '*' is not allowed in ALLOWED_ORIGINS for security reasons")
-        raise ValueError("Wildcard CORS origins are not permitted")
-    if not origin.startswith(("http://", "https://")):
-        logging.error(f"❌ ERROR: Invalid origin format: {origin}")
-        raise ValueError(f"Origin must start with http:// or https://: {origin}")
-
-logging.info(f"✓ CORS allowed origins: {ALLOWED_ORIGINS}")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 logging.basicConfig(level=logging.INFO)
 
