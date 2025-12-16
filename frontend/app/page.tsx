@@ -242,8 +242,7 @@ export default function Home() {
         throw new Error('Invalid response format from server')
       }
       
-      const json = await response.json()
-      const generators = GeneratorsData.fromJSON(json)
+      const generators = GeneratorsData.fromJSON(data)
       setBatteryErrors(generators.validation_errors)
       setAnalysisResult(prev => prev.withGenerators(generators))
       setGeneratorData([...generators.data])
