@@ -1,7 +1,7 @@
 FROM node:18-alpine
 
 # Install Python and dependencies (including libraries needed for kaleido)
-RUN apk add --no-cache python3 py3-pip bash \
+RUN apk add --no-cache python3 py3-pip bash curl \
     gcc g++ musl-dev python3-dev \
     libffi-dev openssl-dev \
     cairo-dev pango-dev gdk-pixbuf-dev
@@ -33,6 +33,18 @@ RUN echo '#!/bin/bash' > /app/start.sh && \
     echo 'source /app/venv/bin/activate' >> /app/start.sh && \
     echo 'cd /app/backend && uvicorn main:app --host 0.0.0.0 --port 8000 &' >> /app/start.sh && \
     echo 'BACKEND_PID=$!' >> /app/start.sh && \
+    echo 'echo "Waiting for backend to be ready..."' >> /app/start.sh && \
+    echo 'for i in {1..30}; do' >> /app/start.sh && \
+    echo '  if curl -f http://127.0.0.1:8000/docs > /dev/null 2>&1; then' >> /app/start.sh && \
+    echo '    echo "Backend is ready!"' >> /app/start.sh && \
+    echo '    break' >> /app/start.sh && \
+    echo '  fi' >> /app/start.sh && \
+    echo '  if [ $i -eq 30 ]; then' >> /app/start.sh && \
+    echo '    echo "Backend failed to start"' >> /app/start.sh && \
+    echo '    exit 1' >> /app/start.sh && \
+    echo '  fi' >> /app/start.sh && \
+    echo '  sleep 1' >> /app/start.sh && \
+    echo 'done' >> /app/start.sh && \
     echo 'cd /app/frontend && npm start &' >> /app/start.sh && \
     echo 'FRONTEND_PID=$!' >> /app/start.sh && \
     echo 'trap "kill $BACKEND_PID $FRONTEND_PID" EXIT' >> /app/start.sh && \
