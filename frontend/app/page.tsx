@@ -53,6 +53,7 @@ export default function Home() {
   const [batteryErrors, setBatteryErrors] = useState<ValidationError[]>([])
   const [showErrorsExpanded, setShowErrorsExpanded] = useState(false)
   const [showBudgetExpanded, setShowBudgetExpanded] = useState(false)
+  const [showBatteryCopyPopup, setShowBatteryCopyPopup] = useState(false)
   const linesTextareaRef = useRef<HTMLTextAreaElement>(null)
   const generatorsTextareaRef = useRef<HTMLTextAreaElement>(null)
   const pastePanelRef = useRef<HTMLDivElement>(null)
@@ -79,7 +80,7 @@ export default function Home() {
     }
   }, [showPastePanel, showBudgetExpanded])
 
-  const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || ''
 
   // Save data to localStorage whenever it changes
   useEffect(() => {
@@ -172,8 +173,9 @@ export default function Home() {
     loadSavedData()
   }, [])
 
-  const handleLinesPaste = async () => {
-    if (!linesPasteData.trim()) {
+  const handleLinesPaste = async (data?: string) => {
+    const dataToProcess = data || linesPasteData
+    if (!dataToProcess.trim()) {
       setError('Please paste lines data')
       return
     }
@@ -187,7 +189,7 @@ export default function Home() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ data: linesPasteData }),
+        body: JSON.stringify({ data: dataToProcess }),
       })
 
       if (!response.ok) {
@@ -206,8 +208,9 @@ export default function Home() {
     }
   }
 
-  const handleGeneratorsPaste = async () => {
-    if (!generatorsPasteData.trim()) {
+  const handleGeneratorsPaste = async (data?: string) => {
+    const dataToProcess = data || generatorsPasteData
+    if (!dataToProcess.trim()) {
       setError('Please paste generators data')
       return
     }
@@ -221,7 +224,7 @@ export default function Home() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ data: generatorsPasteData }),
+        body: JSON.stringify({ data: dataToProcess }),
       })
 
       if (!response.ok) {
@@ -254,8 +257,9 @@ export default function Home() {
     }
   }
 
-  const handleBusesPaste = async () => {
-    if (!busesPasteData.trim()) {
+  const handleBusesPaste = async (data?: string) => {
+    const dataToProcess = data || busesPasteData
+    if (!dataToProcess.trim()) {
       setError('Please paste buses data')
       return
     }
@@ -269,7 +273,7 @@ export default function Home() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ data: busesPasteData }),
+        body: JSON.stringify({ data: dataToProcess }),
       })
 
       if (!response.ok) {
@@ -280,6 +284,86 @@ export default function Home() {
       const json = await response.json()
       const buses = BusesData.fromJSON(json)
       setAnalysisResult(prev => prev.withBuses(buses))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const refreshAll = async () => {
+    setLoading(true)
+    setError('')
+
+    try {
+      const promises = []
+
+      if (linesPasteData.trim()) {
+        promises.push(
+          fetch(`${API_URL}/api/analyze/lines`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data: linesPasteData }),
+          }).then(async (response) => {
+            if (!response.ok) {
+              const errorData = await response.json()
+              throw new Error(errorData.detail || 'Failed to process lines data')
+            }
+            const json = await response.json()
+            const lines = LinesData.fromJSON(json)
+            setAnalysisResult(prev => prev.withLines(lines))
+            setSelectedBranches(new Set(lines.branch_names))
+          })
+        )
+      }
+
+      if (generatorsPasteData.trim()) {
+        promises.push(
+          fetch(`${API_URL}/api/analyze/generators`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data: generatorsPasteData }),
+          }).then(async (response) => {
+            if (!response.ok) {
+              const errorData = await response.json()
+              throw new Error(errorData.detail || 'Failed to process generators data')
+            }
+            const data = await response.json()
+            if (!data || !data.data) {
+              throw new Error('Invalid response format from server')
+            }
+            const generators = GeneratorsData.fromJSON(data)
+            setBatteryErrors(generators.validation_errors)
+            setAnalysisResult(prev => prev.withGenerators(generators))
+            setGeneratorData([...generators.data])
+          })
+        )
+      }
+
+      if (busesPasteData.trim()) {
+        promises.push(
+          fetch(`${API_URL}/api/analyze/buses`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data: busesPasteData }),
+          }).then(async (response) => {
+            if (!response.ok) {
+              const errorData = await response.json()
+              throw new Error(errorData.detail || 'Failed to process buses data')
+            }
+            const json = await response.json()
+            const buses = BusesData.fromJSON(json)
+            setAnalysisResult(prev => prev.withBuses(buses))
+          })
+        )
+      }
+
+      if (promises.length === 0) {
+        setError('No data to process')
+        return
+      }
+
+      await Promise.all(promises)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred')
     } finally {
@@ -470,6 +554,8 @@ export default function Home() {
 
       const result = await response.json()
       await navigator.clipboard.writeText(result.data)
+      setShowBatteryCopyPopup(true)
+      setTimeout(() => setShowBatteryCopyPopup(false), 8000)
     } catch (err) {
       console.error('Error exporting battery data:', err)
     }
@@ -925,74 +1011,109 @@ export default function Home() {
                 {showPastePanel && (
                   <div className="absolute right-0 top-full mt-2 w-[900px] max-w-[95vw] bg-gray-800 border border-gray-700 rounded-lg shadow-xl z-50">
                     <div className="p-4">
+                      <div className="mb-4 p-3 bg-blue-900/20 border border-blue-700 rounded">
+                        <p className="text-blue-300 text-sm font-semibold mb-1">⚠️ Important: Battery Naming</p>
+                        <p className="text-gray-300 text-xs">When adding a new generator as a battery in PowerWorld, put "BT" in the ID field for it to be identified as a battery in the analysis.</p>
+                      </div>
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div className="border border-gray-700 rounded p-4 bg-gray-800/50">
+                        <div className="border border-gray-700 rounded p-4 bg-gray-800/50 flex flex-col">
                           <p className="mb-2 text-gray-300 text-sm font-medium">Lines Data</p>
+                          <div className="mb-2 p-2 bg-gray-900/50 rounded text-xs text-gray-400 min-h-[250px]">
+                            <p className="font-semibold text-gray-300 mb-1">How to get from PowerWorld:</p>
+                            <p>1. Run your simulation in PowerWorld</p>
+                            <p>2. Go to <span className="text-gray-300">TSB Results → Lines</span></p>
+                            <p>3. Click <span className="text-gray-300">View/Modify</span> at the top</p>
+                            <p>4. Set <span className="text-gray-300">Selected for storing: YES</span> for all</p>
+                            <p>5. Click <span className="text-gray-300">Add / Remove Fields</span></p>
+                            <p>6. Make sure you have both:</p>
+                            <p className="ml-2">- <span className="text-gray-300">MW\MW at From Bus</span></p>
+                            <p className="ml-2">- <span className="text-gray-300">Limit Monitoring \ % of MVA limit at From Bus</span></p>
+                            <p>7. Right-click <span className="text-gray-300">Copy/Paste/Send → Copy All</span></p>
+                            <p>8. Paste the table here</p>
+                          </div>
                           <textarea
                             ref={linesTextareaRef}
                             value={linesPasteData}
                             onChange={(e) => setLinesPasteData(e.target.value)}
-                            onPaste={(e) => {
+                            onPaste={async (e) => {
                               e.preventDefault()
                               const pasted = e.clipboardData.getData('text')
                               setLinesPasteData(pasted)
+                              if (pasted.trim()) {
+                                setTimeout(() => handleLinesPaste(pasted), 100)
+                              }
                             }}
                             placeholder="Paste lines data here (Date, Time, Skip, branch columns...)"
                             className="w-full h-32 bg-gray-700 border border-gray-600 rounded px-3 py-2 text-gray-100 text-xs font-mono focus:outline-none focus:border-gray-500 resize-none"
                           />
-                          <button
-                            onClick={handleLinesPaste}
-                            disabled={loading}
-                            className="mt-3 w-full px-4 py-2 bg-gray-700 text-gray-100 rounded hover:bg-gray-600 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {loading ? 'Processing...' : 'Process Lines Data'}
-                          </button>
                         </div>
 
-                        <div className="border border-gray-700 rounded p-4 bg-gray-800/50">
+                        <div className="border border-gray-700 rounded p-4 bg-gray-800/50 flex flex-col">
                           <p className="mb-2 text-gray-300 text-sm font-medium">Generators Data</p>
+                          <div className="mb-2 p-2 bg-gray-900/50 rounded text-xs text-gray-400 min-h-[250px]">
+                            <p className="font-semibold text-gray-300 mb-1">How to get from PowerWorld:</p>
+                            <p>1. Run your simulation in PowerWorld</p>
+                            <p>2. Go to <span className="text-gray-300">TSB Input → Gen Actual MW</span></p>
+                            <p>3. Right-click on the Generators table</p>
+                            <p>4. Select <span className="text-gray-300">Timepoint Records → Insert/Scale Generator Columns</span></p>
+                            <p>5. Pick all the new batteries you added</p>
+                            <p>6. Click the blue arrow and save</p>
+                            <p>7. Right-click <span className="text-gray-300">Copy/Paste/Send → Copy All</span></p>
+                            <p>8. Paste the entire table here</p>
+                          </div>
                           <textarea
                             ref={generatorsTextareaRef}
                             value={generatorsPasteData}
                             onChange={(e) => setGeneratorsPasteData(e.target.value)}
-                            onPaste={(e) => {
+                            onPaste={async (e) => {
                               e.preventDefault()
                               const pasted = e.clipboardData.getData('text')
                               setGeneratorsPasteData(pasted)
+                              if (pasted.trim()) {
+                                setTimeout(() => handleGeneratorsPaste(pasted), 100)
+                              }
                             }}
                             placeholder="Paste generators data here (Date, Time, Gen columns...)"
                             className="w-full h-32 bg-gray-700 border border-gray-600 rounded px-3 py-2 text-gray-100 text-xs font-mono focus:outline-none focus:border-gray-500 resize-none"
                           />
-                          <button
-                            onClick={handleGeneratorsPaste}
-                            disabled={loading}
-                            className="mt-3 w-full px-4 py-2 bg-gray-700 text-gray-100 rounded hover:bg-gray-600 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {loading ? 'Processing...' : 'Process Generators Data'}
-                          </button>
                         </div>
 
-                        <div className="border border-gray-700 rounded p-4 bg-gray-800/50">
+                        <div className="border border-gray-700 rounded p-4 bg-gray-800/50 flex flex-col">
                           <p className="mb-2 text-gray-300 text-sm font-medium">Buses Data</p>
+                          <div className="mb-2 p-2 bg-gray-900/50 rounded text-xs text-gray-400 min-h-[250px]">
+                            <p className="font-semibold text-gray-300 mb-1">How to get from PowerWorld:</p>
+                            <p>1. Run your simulation in PowerWorld</p>
+                            <p>2. Go to <span className="text-gray-300">TSB Results → Buses</span></p>
+                            <p>3. Set <span className="text-gray-300">Selected for storing: YES</span> for all</p>
+                            <p>4. Make sure you have the field:</p>
+                            <p className="ml-2">- <span className="text-gray-300">Voltage\Per Unit Magnitude</span></p>
+                            <p>5. Right-click <span className="text-gray-300">Copy/Paste/Send → Copy All</span></p>
+                            <p>6. Paste the entire table here</p>
+                          </div>
                           <textarea
                             value={busesPasteData}
                             onChange={(e) => setBusesPasteData(e.target.value)}
-                            onPaste={(e) => {
+                            onPaste={async (e) => {
                               e.preventDefault()
                               const pasted = e.clipboardData.getData('text')
                               setBusesPasteData(pasted)
+                              if (pasted.trim()) {
+                                setTimeout(() => handleBusesPaste(pasted), 100)
+                              }
                             }}
                             placeholder="Paste buses data here (Date, Time, Skip, PU Volt columns...)"
                             className="w-full h-32 bg-gray-700 border border-gray-600 rounded px-3 py-2 text-gray-100 text-xs font-mono focus:outline-none focus:border-gray-500 resize-none"
                           />
-                          <button
-                            onClick={handleBusesPaste}
-                            disabled={loading}
-                            className="mt-3 w-full px-4 py-2 bg-gray-700 text-gray-100 rounded hover:bg-gray-600 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {loading ? 'Processing...' : 'Process Buses Data'}
-                          </button>
                         </div>
+                      </div>
+                      <div className="mt-4 flex justify-center">
+                        <button
+                          onClick={refreshAll}
+                          disabled={loading || (!linesPasteData.trim() && !generatorsPasteData.trim() && !busesPasteData.trim())}
+                          className="px-6 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {loading ? 'Processing...' : 'Refresh'}
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -1002,6 +1123,34 @@ export default function Home() {
           </div>
         </div>
       </nav>
+
+      {showBatteryCopyPopup && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowBatteryCopyPopup(false)}>
+          <div className="bg-gray-800 border border-gray-700 rounded-lg shadow-xl p-6 max-w-md mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-4">
+              <div className="flex-shrink-0">
+                <div className="w-10 h-10 bg-green-500 rounded-full flex items-center justify-center">
+                  <span className="text-white text-xl">✓</span>
+                </div>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-white font-semibold mb-2">Battery Data Copied!</h3>
+                <div className="text-gray-300 text-sm space-y-2">
+                  <p>1. Go to <span className="text-gray-200 font-medium">TSB Input → Gen Actual MW</span> in PowerWorld</p>
+                  <p>2. Paste the data using <span className="text-gray-200 font-medium">Ctrl-V</span></p>
+                  <p>3. Re-run your simulation</p>
+                </div>
+                <button
+                  onClick={() => setShowBatteryCopyPopup(false)}
+                  className="mt-4 px-4 py-2 bg-gray-700 text-gray-200 rounded hover:bg-gray-600 transition-colors text-sm"
+                >
+                  Got it
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="w-full px-4 md:px-6 py-4">
 

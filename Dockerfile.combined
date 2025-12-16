@@ -1,0 +1,45 @@
+FROM node:18-alpine
+
+# Install Python and dependencies (including libraries needed for kaleido)
+RUN apk add --no-cache python3 py3-pip bash \
+    gcc g++ musl-dev python3-dev \
+    libffi-dev openssl-dev \
+    cairo-dev pango-dev gdk-pixbuf-dev
+
+WORKDIR /app
+
+# Create virtual environment and install backend dependencies
+COPY backend/requirements.txt ./backend/
+RUN python3 -m venv /app/venv && \
+    /app/venv/bin/pip install --upgrade pip && \
+    /app/venv/bin/pip install --no-cache-dir -r backend/requirements.txt
+
+# Install frontend dependencies
+COPY frontend/package*.json ./frontend/
+WORKDIR /app/frontend
+RUN npm ci
+
+# Copy frontend files and build
+COPY frontend/ ./
+RUN NODE_ENV=production npm run build
+
+# Copy backend files
+WORKDIR /app
+COPY backend/ ./backend/
+
+# Create startup script
+RUN echo '#!/bin/bash' > /app/start.sh && \
+    echo 'set -e' >> /app/start.sh && \
+    echo 'source /app/venv/bin/activate' >> /app/start.sh && \
+    echo 'cd /app/backend && uvicorn main:app --host 0.0.0.0 --port 8000 &' >> /app/start.sh && \
+    echo 'BACKEND_PID=$!' >> /app/start.sh && \
+    echo 'cd /app/frontend && npm start &' >> /app/start.sh && \
+    echo 'FRONTEND_PID=$!' >> /app/start.sh && \
+    echo 'trap "kill $BACKEND_PID $FRONTEND_PID" EXIT' >> /app/start.sh && \
+    echo 'wait' >> /app/start.sh && \
+    chmod +x /app/start.sh
+
+EXPOSE 3000
+
+CMD ["/app/start.sh"]
+

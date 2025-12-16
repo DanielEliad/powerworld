@@ -1,28 +1,17 @@
 version: '3.8'
 
 services:
-  backend:
+  app:
     build:
       context: .
-      dockerfile: Dockerfile.backend
+      dockerfile: Dockerfile.combined
     ports:
-      - "8000:8000"
+      - "3000:3000"
     environment:
       - PYTHONUNBUFFERED=1
+      - NEXT_PUBLIC_API_URL=
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    ports:
-      - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-      - WATCHPACK_POLLING=true
-    depends_on:
-      - backend
