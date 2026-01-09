@@ -21,19 +21,17 @@ interface LinesChartProps {
 }
 
 export function LinesChart({ linesData, selectedBranches, onToggleBranch }: LinesChartProps) {
-  const getTraces = () => {
-    let colorIndex = 0
-    return Array.from(selectedBranches)
-      .filter(branch => linesData.data.branches[branch])
-      .map(branch => ({
-        x: linesData.data.datetime,
-        y: linesData.data.branches[branch],
-        type: 'scatter' as const,
-        mode: 'lines' as const,
-        name: branch,
-        line: { width: 2, color: CHART_COLORS[colorIndex++ % CHART_COLORS.length] },
-      }))
-  }
+  let colorIndex = 0
+  const traces = Array.from(selectedBranches)
+    .filter(branch => linesData.data.branches[branch])
+    .map(branch => ({
+      x: linesData.data.datetime,
+      y: linesData.data.branches[branch],
+      type: 'scatter' as const,
+      mode: 'lines' as const,
+      name: branch,
+      line: { width: 2, color: CHART_COLORS[colorIndex++ % CHART_COLORS.length] },
+    }))
 
   return (
     <div className="bg-gray-800 border border-gray-700 p-4 rounded">
@@ -58,58 +56,63 @@ export function LinesChart({ linesData, selectedBranches, onToggleBranch }: Line
           </label>
         ))}
       </div>
-      <Plot
-        data={getTraces()}
-        layout={{
-          ...getPlotlyLayout('Time', '% of MVA Limit', 600, true),
-          shapes: [
-            {
-              type: 'line',
-              xref: 'paper',
-              x0: 0,
-              x1: 1,
-              yref: 'y',
-              y0: 90,
-              y1: 90,
-              line: { color: '#f97316', width: 2, dash: 'dash' },
-            },
-            {
-              type: 'line',
-              xref: 'paper',
-              x0: 0,
-              x1: 1,
-              yref: 'y',
-              y0: 100,
-              y1: 100,
-              line: { color: '#ef4444', width: 2, dash: 'dash' },
-            },
-          ],
-          annotations: [
-            {
-              xref: 'paper',
-              x: 0.02,
-              y: 90,
-              text: '90% threshold',
-              showarrow: false,
-              bgcolor: 'rgba(249, 115, 22, 0.8)',
-              bordercolor: 'rgba(249, 115, 22, 0.8)',
-              font: { color: '#ffffff', size: 10 },
-            },
-            {
-              xref: 'paper',
-              x: 0.02,
-              y: 100,
-              text: '100% limit',
-              showarrow: false,
-              bgcolor: 'rgba(239, 68, 68, 0.8)',
-              bordercolor: 'rgba(239, 68, 68, 0.8)',
-              font: { color: '#ffffff', size: 10 },
-            },
-          ],
-        }}
-        style={{ width: '100%', height: '100%' }}
-        config={PLOTLY_CONFIG}
-      />
+      {traces.length > 0 ? (
+        <Plot
+            key={`chart-${selectedBranches.size}`}
+            data={traces}
+            layout={{
+              ...getPlotlyLayout('Time', '% of MVA Limit', 600, true),
+              shapes: [
+                {
+                  type: 'line',
+                  xref: 'paper',
+                  x0: 0,
+                  x1: 1,
+                  yref: 'y',
+                  y0: 90,
+                  y1: 90,
+                  line: { color: '#f97316', width: 2, dash: 'dash' },
+                },
+                {
+                  type: 'line',
+                  xref: 'paper',
+                  x0: 0,
+                  x1: 1,
+                  yref: 'y',
+                  y0: 100,
+                  y1: 100,
+                  line: { color: '#ef4444', width: 2, dash: 'dash' },
+                },
+              ],
+              annotations: [
+                {
+                  xref: 'paper',
+                  x: 0.02,
+                  y: 90,
+                  text: '90% threshold',
+                  showarrow: false,
+                  bgcolor: 'rgba(249, 115, 22, 0.8)',
+                  bordercolor: 'rgba(249, 115, 22, 0.8)',
+                  font: { color: '#ffffff', size: 10 },
+                },
+                {
+                  xref: 'paper',
+                  x: 0.02,
+                  y: 100,
+                  text: '100% limit',
+                  showarrow: false,
+                  bgcolor: 'rgba(239, 68, 68, 0.8)',
+                  bordercolor: 'rgba(239, 68, 68, 0.8)',
+                  font: { color: '#ffffff', size: 10 },
+                },
+              ],
+            }}
+            style={{ width: '100%', height: '100%' }}
+            config={PLOTLY_CONFIG}
+          />
+      ) : (
+        <div className="text-gray-400 p-4">Select branches to display chart...</div>
+      )}
     </div>
   )
 }

@@ -174,13 +174,9 @@ def validate_load_pq_sync(
     errors = []
 
     for bus_num, cols in mw_load_by_bus.items():
-        if cols.get('mw_col') and bus_num not in mvar_load_by_bus:
-            errors.append({
-                "bus": str(bus_num),
-                "error_type": ValidationErrorType.LOAD_PQ_NOT_SYNCHRONIZED.value,
-                "message": f"Bus {bus_num}: Has MW column but missing MVar column for #EV load"
-            })
-        elif cols.get('mw_col') and not mvar_load_by_bus.get(bus_num, {}).get('mvar_col'):
+        has_mw = bool(cols.get('mw_col'))
+        has_mvar = bool(mvar_load_by_bus.get(bus_num, {}).get('mvar_col'))
+        if has_mw and not has_mvar:
             errors.append({
                 "bus": str(bus_num),
                 "error_type": ValidationErrorType.LOAD_PQ_NOT_SYNCHRONIZED.value,
@@ -188,13 +184,9 @@ def validate_load_pq_sync(
             })
 
     for bus_num, cols in mvar_load_by_bus.items():
-        if cols.get('mvar_col') and bus_num not in mw_load_by_bus:
-            errors.append({
-                "bus": str(bus_num),
-                "error_type": ValidationErrorType.LOAD_PQ_NOT_SYNCHRONIZED.value,
-                "message": f"Bus {bus_num}: Has MVar column but missing MW column for #EV load"
-            })
-        elif cols.get('mvar_col') and not mw_load_by_bus.get(bus_num, {}).get('mw_col'):
+        has_mvar = bool(cols.get('mvar_col'))
+        has_mw = bool(mw_load_by_bus.get(bus_num, {}).get('mw_col'))
+        if has_mvar and not has_mw:
             errors.append({
                 "bus": str(bus_num),
                 "error_type": ValidationErrorType.LOAD_PQ_NOT_SYNCHRONIZED.value,

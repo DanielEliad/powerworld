@@ -7,9 +7,8 @@ import {
   AnalysisResult,
   GeneratorsData,
   BatteryTable,
-  BatteryCost,
   BudgetSummary,
-  ValidationError
+  LoadsData
 } from '../types'
 
 export interface PasteData {
@@ -27,13 +26,6 @@ export interface LoadMoveOperation {
   mw_value: number
 }
 
-export interface EditedLoads {
-  [busId: string]: {
-    mw?: number[]
-    mvar?: number[]
-  }
-}
-
 export function useAnalysisData() {
   const [pasteData, setPasteDataState] = useState<PasteData>({
     lines: '',
@@ -45,13 +37,10 @@ export function useAnalysisData() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>('')
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult>(AnalysisResult.empty())
-  const [editedLoads, setEditedLoads] = useState<EditedLoads>({})
 
-  const recomputeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const isRecomputingRef = useRef<boolean>(false)
   const recomputeAllRef = useRef<(() => Promise<void>) | null>(null)
   const batteryUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-  const buildEditedLoadPasteStringsRef = useRef<(() => { mw: string | null; mvar: string | null }) | null>(null)
 
   // Load from localStorage on mount
   useEffect(() => {
@@ -91,73 +80,10 @@ export function useAnalysisData() {
     if (pasteData.loadsMVar) localStorage.setItem(LocalStorageKey.LOADS_MVAR_DATA, pasteData.loadsMVar)
   }, [pasteData.loadsMVar])
 
-  const buildEditedLoadPasteStrings = useCallback((): { mw: string | null; mvar: string | null } => {
-    if (!analysisResult.loads || Object.keys(editedLoads).length === 0) {
-      return { mw: pasteData.loadsMW || null, mvar: pasteData.loadsMVar || null }
-    }
-
-    const loads = analysisResult.loads
-    const columns = loads.columns
-
-    const buildForKind = (kind: 'mw' | 'mvar'): string | null => {
-      const hasAnyEdits = Object.values(editedLoads).some(
-        e => (kind === 'mw' ? e.mw : e.mvar)?.length
-      )
-      if (!hasAnyEdits) {
-        return kind === 'mw' ? (pasteData.loadsMW || null) : (pasteData.loadsMVar || null)
-      }
-
-      // Check if we have any columns of this kind in the original data
-      const hasAnyColumnsOfKind = Object.values(loads.load_by_bus).some(
-        bus => kind === 'mw' ? bus.mw_col : bus.mvar_col
-      )
-      
-      // If original paste didn't have this kind of data, don't send it
-      if (!hasAnyColumnsOfKind) {
-        return kind === 'mw' ? (pasteData.loadsMW || null) : (pasteData.loadsMVar || null)
-      }
-
-      const data = loads.data.map(record => ({ ...record }))
-      Object.entries(editedLoads).forEach(([busId, series]) => {
-        const colName = kind === 'mw'
-          ? loads.load_by_bus[busId]?.mw_col
-          : loads.load_by_bus[busId]?.mvar_col
-        const editedSeries = kind === 'mw' ? series.mw : series.mvar
-        if (!colName || !editedSeries) return
-
-        editedSeries.forEach((val, idx) => {
-          if (idx < data.length) {
-            data[idx][colName] = val
-          }
-        })
-      })
-
-      const headerLine = columns.join('\t')
-      const dataLines = data.map(record =>
-        columns.map(col => String(record[col] ?? '')).join('\t')
-      )
-
-      const lines = [
-        'Timepoint',
-        headerLine,
-        ...dataLines,
-      ]
-      return lines.join('\n')
-    }
-
-    return {
-      mw: buildForKind('mw'),
-      mvar: buildForKind('mvar'),
-    }
-  }, [analysisResult.loads, editedLoads, pasteData.loadsMW, pasteData.loadsMVar])
-
-  // Store latest buildEditedLoadPasteStrings in ref
-  useEffect(() => {
-    buildEditedLoadPasteStringsRef.current = buildEditedLoadPasteStrings
-  }, [buildEditedLoadPasteStrings])
-
   const recomputeAll = useCallback(async () => {
-    if (isRecomputingRef.current) return
+    if (isRecomputingRef.current) {
+      return
+    }
 
     const hasData = pasteData.lines || pasteData.generators || pasteData.buses || pasteData.loadsMW || pasteData.loadsMVar
     if (!hasData) {
@@ -170,19 +96,17 @@ export function useAnalysisData() {
     setError('')
 
     try {
-      // Use ref to get latest version without recreating this callback
-      const edited = buildEditedLoadPasteStringsRef.current?.() || { mw: pasteData.loadsMW || null, mvar: pasteData.loadsMVar || null }
-
       const result = await api.analyze({
         lines_data: pasteData.lines || null,
         generators_data: pasteData.generators || null,
         buses_data: pasteData.buses || null,
-        loads_mw_data: edited.mw,
-        loads_mvar_data: edited.mvar,
+        loads_mw_data: pasteData.loadsMW || null,
+        loads_mvar_data: pasteData.loadsMVar || null,
       })
 
       setAnalysisResult(result)
     } catch (err) {
+      console.error('API error:', err)
       setError(err instanceof Error ? err.message : 'An error occurred')
     } finally {
       setLoading(false)
@@ -198,80 +122,11 @@ export function useAnalysisData() {
   // Recompute when paste data changes
   useEffect(() => {
     const hasData = pasteData.lines || pasteData.generators || pasteData.buses || pasteData.loadsMW || pasteData.loadsMVar
-    if (!hasData) return
+    if (!hasData) {
+      return
+    }
     recomputeAllRef.current?.()
   }, [pasteData.lines, pasteData.generators, pasteData.buses, pasteData.loadsMW, pasteData.loadsMVar])
-
-  // Clear edited loads when loads data structure changes
-  useEffect(() => {
-    if (!analysisResult.loads || analysisResult.loads.is_first_paste) {
-      setEditedLoads(prev => {
-        // Only update if actually different
-        if (Object.keys(prev).length === 0) return prev
-        return {}
-      })
-      return
-    }
-
-    setEditedLoads(prev => {
-      const cleaned: EditedLoads = {}
-      const busIds = Object.keys(analysisResult.loads!.load_by_bus || {})
-      const expectedLength = analysisResult.loads!.datetime?.length || 0
-
-      Object.entries(prev).forEach(([busId, series]) => {
-        if (!busIds.includes(busId)) return
-        const cleanedSeries: { mw?: number[]; mvar?: number[] } = {}
-        if (series.mw && series.mw.length === expectedLength) {
-          cleanedSeries.mw = series.mw
-        }
-        if (series.mvar && series.mvar.length === expectedLength) {
-          cleanedSeries.mvar = series.mvar
-        }
-        if (cleanedSeries.mw || cleanedSeries.mvar) {
-          cleaned[busId] = cleanedSeries
-        }
-      })
-
-      // Only update if actually different
-      const prevKeys = Object.keys(prev).sort()
-      const cleanedKeys = Object.keys(cleaned).sort()
-      if (prevKeys.length === cleanedKeys.length && 
-          prevKeys.every((key, i) => key === cleanedKeys[i])) {
-        return prev // No change, return same reference
-      }
-
-      return cleaned
-    })
-  }, [analysisResult.loads])
-
-  // Debounced recompute when edited loads change
-  useEffect(() => {
-    if (!analysisResult.loads || analysisResult.loads.is_first_paste || Object.keys(editedLoads).length === 0) {
-      if (recomputeTimeoutRef.current) {
-        clearTimeout(recomputeTimeoutRef.current)
-        recomputeTimeoutRef.current = null
-      }
-      return
-    }
-
-    if (recomputeTimeoutRef.current) {
-      clearTimeout(recomputeTimeoutRef.current)
-    }
-
-    recomputeTimeoutRef.current = setTimeout(() => {
-      if (!isRecomputingRef.current) {
-        recomputeAllRef.current?.()
-      }
-      recomputeTimeoutRef.current = null
-    }, 800)
-
-    return () => {
-      if (recomputeTimeoutRef.current) {
-        clearTimeout(recomputeTimeoutRef.current)
-        recomputeTimeoutRef.current = null
-      }
-    }
-  }, [editedLoads, analysisResult.loads])
 
   const setPasteData = useCallback((key: keyof PasteData, value: string) => {
     setPasteDataState(prev => ({ ...prev, [key]: value }))
@@ -379,6 +234,30 @@ export function useAnalysisData() {
     try {
       const result = await api.moveLoads({ operations })
       
+      // Update analysisResult.loads.mw_data directly with backend response
+      setAnalysisResult(prev => {
+        if (!prev.loads) return prev
+        
+        const updatedLoads = new LoadsData(
+          prev.loads.columns,
+          prev.loads.rows,
+          prev.loads.data,
+          prev.loads.datetime,
+          prev.loads.load_columns,
+          prev.loads.load_by_bus,
+          result.current_mw_data, // Updated MW data
+          prev.loads.mvar_data,
+          result.original_mw_data, // Original MW data
+          prev.loads.differences,
+          prev.loads.energy_moved_kwh,
+          (result as any).load_cost_eur || prev.loads.load_cost_eur,
+          prev.loads.validation_errors,
+          prev.loads.is_first_paste
+        )
+        
+        return prev.withLoads(updatedLoads)
+      })
+      
       // Update the local paste data with the new strings
       if (result.loads_mw_paste) {
         setPasteDataState(prev => ({ ...prev, loadsMW: result.loads_mw_paste }))
@@ -398,7 +277,7 @@ export function useAnalysisData() {
       setError(err instanceof Error ? err.message : 'Failed to apply load moves')
       return null
     }
-  }, [])
+  }, [analysisResult.loads])
 
   const exportLoadMWToClipboard = useCallback(async (): Promise<boolean> => {
     if (!pasteData.loadsMW) return false
@@ -428,6 +307,30 @@ export function useAnalysisData() {
     try {
       const result = await api.resetLoads()
       
+      // Update analysisResult.loads.mw_data directly with backend response
+      setAnalysisResult(prev => {
+        if (!prev.loads) return prev
+        
+        const updatedLoads = new LoadsData(
+          prev.loads.columns,
+          prev.loads.rows,
+          prev.loads.data,
+          prev.loads.datetime,
+          prev.loads.load_columns,
+          prev.loads.load_by_bus,
+          result.current_mw_data, // Reset MW data
+          prev.loads.mvar_data,
+          result.original_mw_data, // Original MW data
+          {},
+          {},
+          0,
+          prev.loads.validation_errors,
+          prev.loads.is_first_paste
+        )
+        
+        return prev.withLoads(updatedLoads)
+      })
+      
       // Update the local paste data with the reset strings
       if (result.loads_mw_paste) {
         setPasteDataState(prev => ({ ...prev, loadsMW: result.loads_mw_paste }))
@@ -447,7 +350,7 @@ export function useAnalysisData() {
       setError(err instanceof Error ? err.message : 'Failed to reset load moves')
       return null
     }
-  }, [])
+  }, [analysisResult.loads])
 
   // Cleanup battery update timeout on unmount
   useEffect(() => {
@@ -464,8 +367,6 @@ export function useAnalysisData() {
     loading,
     error,
     analysisResult,
-    editedLoads,
-    setEditedLoads,
     updateBatteryValue,
     exportBatteryToClipboard,
     applyLoadMoves,

@@ -9,7 +9,7 @@ export interface OverallStats {
   overLimit: number
   mainLineBelow90: boolean
   mainLineFlatness: number | null
-  mainTransformerReverseFlow: boolean
+  mainTransformerReverseFlow: boolean | null
 }
 
 interface StatisticsGridProps {
@@ -49,7 +49,7 @@ export function StatisticsGrid({ stats, analysisResult }: StatisticsGridProps) {
           value={stats.mainLineFlatness != null ? `${stats.mainLineFlatness.toFixed(2)}%` : 'N/A'}
           subtitle="Lower is flatter"
         />
-        {analysisResult.lines && (
+        {analysisResult.lines && stats.mainTransformerReverseFlow !== null && (
           <StatCard
             title="Main transformer reverse flow"
             value={stats.mainTransformerReverseFlow ? 'Yes' : 'No'}

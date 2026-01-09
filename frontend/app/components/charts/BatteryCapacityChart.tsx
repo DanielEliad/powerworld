@@ -1,5 +1,6 @@
 'use client'
 
+import { useMemo } from 'react'
 import dynamic from 'next/dynamic'
 import { GeneratorsData } from '../../types'
 import { getPlotlyLayout, CHART_COLORS, PLOTLY_CONFIG } from '../../lib/constants'
@@ -22,9 +23,7 @@ export function BatteryCapacityChart({ generatorsData }: BatteryCapacityChartPro
   const batteryCapacity = generatorsData.battery_capacity
   const busNumbers = Object.keys(batteryCapacity).sort((a, b) => parseInt(a) - parseInt(b))
 
-  if (busNumbers.length === 0) return null
-
-  const getTraces = () => {
+  const traces = useMemo(() => {
     let colorIndex = 0
     return busNumbers.map(bus => ({
       x: generatorsData.datetime,
@@ -34,7 +33,9 @@ export function BatteryCapacityChart({ generatorsData }: BatteryCapacityChartPro
       name: `Bus ${bus}`,
       line: { width: 2, color: CHART_COLORS[colorIndex++ % CHART_COLORS.length] },
     }))
-  }
+  }, [generatorsData.datetime, batteryCapacity, busNumbers])
+
+  if (busNumbers.length === 0) return null
 
   return (
     <div className="bg-gray-800 border border-gray-700 p-4 rounded">
@@ -45,7 +46,7 @@ export function BatteryCapacityChart({ generatorsData }: BatteryCapacityChartPro
         Capacity over time for each bus in kWh. Negative MW values charge the battery (capacity increases), positive values discharge (capacity decreases).
       </p>
       <Plot
-        data={getTraces()}
+        data={traces}
         layout={getPlotlyLayout('Time', 'Capacity (kWh)', 600, true)}
         style={{ width: '100%', height: '100%' }}
         config={PLOTLY_CONFIG}

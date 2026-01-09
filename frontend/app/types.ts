@@ -240,10 +240,8 @@ export class LinesData {
     public branch_names: string[],
     public main_line_below_90: boolean,
     public main_line_flatness: number | null,
-    public mw_from_data: { datetime: string[]; branches: Record<string, number[]> },
-    public mw_from_branch_names: string[],
     public reverse_flow_errors: ValidationError[],
-    public main_transformer_reverse_flow: boolean
+    public main_transformer_reverse_flow: boolean | null
   ) {}
 
   static fromJSON(json: any): LinesData {
@@ -253,10 +251,8 @@ export class LinesData {
       json.branch_names,
       json.main_line_below_90,
       json.main_line_flatness,
-      json.mw_from_data,
-      json.mw_from_branch_names,
       (json.reverse_flow_errors || []).map((e: any) => parseValidationError(e)),
-      json.main_transformer_reverse_flow || false
+      json.main_transformer_reverse_flow !== undefined ? json.main_transformer_reverse_flow : null
     )
   }
 }

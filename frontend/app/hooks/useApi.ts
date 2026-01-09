@@ -55,6 +55,7 @@ export interface MoveLoadsResponse {
   loads_mvar_paste: string | null
   current_mw_data: Record<string, number[]>
   original_mw_data: Record<string, number[]>
+  load_cost_eur?: number
 }
 
 export async function analyze(request: AnalyzeRequest): Promise<AnalysisResult> {

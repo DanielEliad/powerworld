@@ -42,22 +42,9 @@ class BusConfig(BaseModel):
     ev_capacity_kw: float = 0.0
 
 
-class PasteDataRequest(BaseModel):
-    data: str
-
-
-class LoadPasteRequest(BaseModel):
-    data: str
-    load_type: str
-
-
 class UpdateBatteryRequest(BaseModel):
     battery_table_data: List[Dict[str, Any]]
     datetime: List[str]
-
-
-class BusConfigurationRequest(BaseModel):
-    buses: List[BusConfig]
 
 
 class ReconstructTableRequest(BaseModel):

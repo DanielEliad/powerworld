@@ -1,5 +1,6 @@
 'use client'
 
+import { useMemo } from 'react'
 import dynamic from 'next/dynamic'
 import { GeneratorsData } from '../../types'
 import { getPlotlyLayout, CHART_COLORS, PLOTLY_CONFIG } from '../../lib/constants'
@@ -19,7 +20,7 @@ interface GeneratorChartProps {
 }
 
 export function GeneratorChart({ generatorsData }: GeneratorChartProps) {
-  const getTraces = () => {
+  const traces = useMemo(() => {
     const genColumns = generatorsData.generator_columns || []
     if (genColumns.length === 0) return []
 
@@ -39,7 +40,7 @@ export function GeneratorChart({ generatorsData }: GeneratorChartProps) {
         line: { width: 2, color: CHART_COLORS[colorIndex++ % CHART_COLORS.length] },
       }
     })
-  }
+  }, [generatorsData.datetime, generatorsData.data, generatorsData.generator_columns])
 
   if (generatorsData.data.length === 0) return null
 
@@ -49,7 +50,7 @@ export function GeneratorChart({ generatorsData }: GeneratorChartProps) {
         Generator Output Over Time
       </h2>
       <Plot
-        data={getTraces()}
+        data={traces}
         layout={getPlotlyLayout('Time', 'MW', 600, true)}
         style={{ width: '100%', height: '100%' }}
         config={PLOTLY_CONFIG}

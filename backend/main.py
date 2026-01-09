@@ -7,25 +7,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from models import (
-    PasteDataRequest,
-    LoadPasteRequest,
     UpdateBatteryRequest,
-    BusConfigurationRequest,
     ReconstructTableRequest,
     AnalyzeRequest,
     MoveLoadsRequest
 )
 from analysis import (
-    analyze_lines,
-    analyze_generators,
-    analyze_buses,
-    analyze_loads,
     analyze_all,
     update_battery_capacity,
     apply_load_moves,
-    reset_load_moves,
-    bus_config_manager,
-    load_store
+    reset_load_moves
 )
 from parsing import reconstruct_table
 from report import generate_pdf_report
@@ -40,9 +31,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-logging.basicConfig(level=logging.INFO)
-
 
 @app.get("/")
 async def read_root():
@@ -63,57 +51,6 @@ async def analyze(request: AnalyzeRequest):
         request.loads_mw_data,
         request.loads_mvar_data
     )
-
-
-@app.post("/api/analyze/lines")
-async def analyze_lines_endpoint(request: PasteDataRequest):
-    try:
-        return analyze_lines(request.data)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logging.error(f"Error processing lines data: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error processing lines data: {str(e)}")
-
-
-@app.post("/api/analyze/generators")
-async def analyze_generators_endpoint(request: PasteDataRequest):
-    try:
-        return analyze_generators(request.data, load_store.current_load_cost_eur)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logging.error(f"Error processing generators data: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error processing generators data: {str(e)}")
-
-
-@app.post("/api/analyze/buses")
-async def analyze_buses_endpoint(request: PasteDataRequest):
-    try:
-        return analyze_buses(request.data)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logging.error(f"Error processing buses data: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error processing buses data: {str(e)}")
-
-
-@app.post("/api/analyze/loads")
-async def analyze_loads_endpoint(request: LoadPasteRequest):
-    load_type = request.load_type.lower()
-    if load_type not in ["mw", "mvar"]:
-        raise HTTPException(status_code=400, detail="load_type must be 'mw' or 'mvar'")
-
-    try:
-        if load_type == "mw":
-            return analyze_loads(request.data, None)
-        else:
-            return analyze_loads(None, request.data)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logging.error(f"Error processing loads data: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error processing loads data: {str(e)}")
 
 
 @app.post("/api/analyze/generators/update-battery")
@@ -177,19 +114,6 @@ async def generate_report(request: Dict[str, Any]):
     except Exception as e:
         logging.error(f"Error generating report: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error generating report: {str(e)}")
-
-
-@app.get("/api/bus-config")
-async def get_bus_config():
-    configs = bus_config_manager.get_all()
-    return {"buses": [config.dict() for config in configs]}
-
-
-@app.post("/api/bus-config")
-async def set_bus_config(request: BusConfigurationRequest):
-    bus_config_manager.set_all(request.buses)
-    configs = bus_config_manager.get_all()
-    return {"message": "Bus configuration updated", "buses": [config.dict() for config in configs]}
 
 
 if __name__ == "__main__":

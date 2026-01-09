@@ -9,7 +9,17 @@ def parse_datetime(date_str: str, time_str: str) -> str:
     if len(date_parts) != 3:
         raise ValueError(f"Invalid date format: {date_str}")
 
-    month, day, year = date_parts
+    # Try to detect format: if first part > 12, it must be DD/MM/YYYY (European)
+    first, second, year = date_parts
+    if int(first) > 12:
+        # DD/MM/YYYY format
+        day, month = first, second
+    elif int(second) > 12:
+        # MM/DD/YYYY format (second part is day > 12)
+        month, day = first, second
+    else:
+        # Ambiguous (both <= 12), assume MM/DD/YYYY (US format)
+        month, day = first, second
     time_parts = time_str.split(' ')
     time_part = time_parts[0] if time_parts else ''
     ampm = time_parts[1].upper() if len(time_parts) > 1 else ''
@@ -58,18 +68,17 @@ def parse_tsv_with_header(text: str) -> pd.DataFrame:
 def convert_numeric_columns(df: pd.DataFrame, exclude: List[str]) -> pd.DataFrame:
     for col in df.columns:
         if col not in exclude:
+            # Replace comma decimal separators with periods (European format support)
+            df[col] = df[col].astype(str).str.replace(',', '.', regex=False)
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
     return df
 
 
 def extract_datetimes(df: pd.DataFrame) -> List[str]:
     datetimes = []
-    for _, row in df.iterrows():
-        try:
-            dt = parse_datetime(str(row['Date']), str(row['Time']))
-            datetimes.append(dt)
-        except ValueError:
-            datetimes.append('')
+    for idx, row in df.iterrows():
+        dt = parse_datetime(str(row['Date']), str(row['Time']))
+        datetimes.append(dt)
     return datetimes
 
 
@@ -87,7 +96,9 @@ def parse_lines(text: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     df = parse_tsv_with_header(text)
     df = convert_numeric_columns(df, exclude=['Date', 'Time'])
     base_cols = ['Date', 'Time', 'Skip']
-    mva_limit_cols = base_cols + [col for col in df.columns if '% of mva limit from' in col.lower()]
+    # Match columns with "% of MVA Limit" (with or without "From")
+    mva_limit_cols = base_cols + [col for col in df.columns if '% of mva limit' in col.lower() and col not in base_cols]
+    # Match columns with "MW From" but NOT "% of MVA"
     mw_from_cols = base_cols + [col for col in df.columns if 'mw from' in col.lower() and '% of mva' not in col.lower()]
 
     mva_limit_df = df[[c for c in mva_limit_cols if c in df.columns]].copy()

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 import pandas as pd
 
-from models import BusType, BatteryType, BusConfig, ValidationErrorType
+from models import BusType, BatteryType, BusConfig
 from config import (
     BATTERY_CONSTRAINTS, DEFAULT_BUS_CONFIG, BUDGET_LIMIT_EUR,
     LOAD_COST_PER_KWH_EUR, DEFAULT_LOAD_MW, DEFAULT_LOAD_MVAR
@@ -23,20 +23,13 @@ class BusConfigManager:
     def __init__(self):
         self._configs: Dict[int, BusConfig] = {}
 
-    def ensure_initialized(self):
+    def _ensure_initialized(self):
         if not self._configs:
             self._configs = dict(DEFAULT_BUS_CONFIG)
 
     def get(self, bus_num: int) -> Optional[BusConfig]:
-        self.ensure_initialized()
+        self._ensure_initialized()
         return self._configs.get(bus_num)
-
-    def set_all(self, configs: List[BusConfig]):
-        self._configs = {c.bus_number: c for c in configs}
-
-    def get_all(self) -> List[BusConfig]:
-        self.ensure_initialized()
-        return list(self._configs.values())
 
 
 class LoadDataStore:
@@ -122,8 +115,9 @@ def analyze_lines(text: str) -> Dict[str, Any]:
     mva_limit_df, mw_from_df = parse_lines(text)
     datetimes = extract_datetimes(mva_limit_df)
 
+    base_cols = ['Date', 'Time', 'Skip']
     branch_columns = [col for col in mva_limit_df.columns
-                      if '% of mva limit from' in col.lower() or 'mva limit' in col.lower()]
+                      if '% of mva limit' in col.lower() and col not in base_cols]
 
     if not branch_columns:
         raise ValueError("No branch columns found in data")
@@ -164,28 +158,24 @@ def analyze_lines(text: str) -> Dict[str, Any]:
                 variance = sum((v - mean) ** 2 for v in main_line_values) / len(main_line_values)
                 main_line_flatness = (variance ** 0.5 / mean) * 100
 
-    mw_from_branches = {}
-    mw_from_branch_names = []
+    # Check main transformer (1->2) reverse flow (requires "MW From" columns)
+    main_transformer_reverse_flow = None
     reverse_flow_errors = []
-    main_transformer_reverse_flow = False
-
-    base_cols = ['Date', 'Time', 'Skip']
-    if len(mw_from_df.columns) > len([c for c in base_cols if c in mw_from_df.columns]):
-        mw_from_columns = [col for col in mw_from_df.columns if col not in base_cols]
-
+    mw_from_columns = [col for col in mw_from_df.columns if col not in base_cols]
+    
+    if mw_from_columns:
+        # We have MW From data, check for reverse flow on branch 1-2
+        main_transformer_reverse_flow = False
         for col in mw_from_columns:
             branch_name = extract_branch_name(col)
-            if branch_name != "1-2":
-                continue
-
-            values = mw_from_df[col].tolist()
-            mw_from_branches[branch_name] = values
-            mw_from_branch_names.append(branch_name)
-
-            error = detect_reverse_power_flow(values, branch_name)
-            if error:
-                reverse_flow_errors.append(error)
-                main_transformer_reverse_flow = True
+            if branch_name == "1-2":
+                values = mw_from_df[col].tolist()
+                # Check if any value is negative (reverse flow)
+                error = detect_reverse_power_flow(values, branch_name)
+                if error:
+                    reverse_flow_errors.append(error)
+                    main_transformer_reverse_flow = True
+                break
 
     return {
         "data": {"datetime": datetimes, "branches": branches},
@@ -194,8 +184,6 @@ def analyze_lines(text: str) -> Dict[str, Any]:
         "main_line_below_90": main_line_below_90,
         "main_line_flatness": main_line_flatness,
         "main_transformer_reverse_flow": main_transformer_reverse_flow,
-        "mw_from_data": {"datetime": datetimes, "branches": mw_from_branches},
-        "mw_from_branch_names": mw_from_branch_names,
         "reverse_flow_errors": reverse_flow_errors
     }
 
@@ -252,14 +240,11 @@ def analyze_generators(text: str, load_cost_eur: float = 0.0) -> Dict[str, Any]:
     datetimes = extract_datetimes(df)
 
     if datetimes and datetimes[-1]:
-        try:
-            last_dt = datetime.fromisoformat(datetimes[-1])
-            next_day = last_dt.replace(hour=0, minute=0, second=0)
-            if next_day <= last_dt:
-                next_day = next_day + timedelta(days=1)
-            datetimes.append(next_day.isoformat())
-        except:
-            datetimes.append('')
+        last_dt = datetime.fromisoformat(datetimes[-1])
+        next_day = last_dt.replace(hour=0, minute=0, second=0)
+        if next_day <= last_dt:
+            next_day = next_day + timedelta(days=1)
+        datetimes.append(next_day.isoformat())
 
     gen_columns = [col for col in df.columns
                    if col.lower().startswith('gen') and 'mw' in col.lower()
@@ -508,14 +493,10 @@ def analyze_all(
     if buses_data:
         result["buses"] = analyze_buses(buses_data)
 
-    print(result)
     return result
 
 
 def apply_load_moves(operations: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Apply load move operations and return current and original MW data for comparison.
-    """
     if not load_store.current_mw:
         raise ValueError("No current MW load data available")
     
@@ -622,9 +603,6 @@ def apply_load_moves(operations: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def reset_load_moves() -> Dict[str, Any]:
-    """
-    Reset all load moves by reverting current to default (original) paste data.
-    """
     if not load_store.default_mw:
         raise ValueError("No default MW load data available")
     

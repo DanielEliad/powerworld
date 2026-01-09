@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { useAnalysisData } from './hooks/useAnalysisData'
 import { useClickOutside } from './hooks/useClickOutside'
 import { api } from './hooks/useApi'
@@ -27,8 +27,6 @@ export default function Home() {
     loading,
     error,
     analysisResult,
-    editedLoads,
-    setEditedLoads,
     updateBatteryValue,
     exportBatteryToClipboard,
     applyLoadMoves,
@@ -38,19 +36,20 @@ export default function Home() {
     recomputeAll
   } = useAnalysisData()
 
-  const [selectedBranches, setSelectedBranches] = useState<Set<string>>(new Set())
+  const [deselectedBranches, setDeselectedBranches] = useState<Set<string>>(new Set())
   const [showPastePanel, setShowPastePanel] = useState(true)
   const pastePanelRef = useRef<HTMLDivElement>(null)
 
   useClickOutside(pastePanelRef, () => setShowPastePanel(false), showPastePanel)
 
-  // Initialize selected branches when lines data changes
-  if (analysisResult.lines && selectedBranches.size === 0) {
-    setSelectedBranches(new Set(analysisResult.lines.branch_names))
-  }
+  // Compute selected branches from available branches minus deselected ones
+  const selectedBranches = useMemo(() => {
+    if (!analysisResult.lines) return new Set<string>()
+    return new Set(analysisResult.lines.branch_names.filter(b => !deselectedBranches.has(b)))
+  }, [analysisResult.lines, deselectedBranches])
 
   const toggleBranch = useCallback((branch: string) => {
-    setSelectedBranches(prev => {
+    setDeselectedBranches(prev => {
       const newSet = new Set(prev)
       if (newSet.has(branch)) {
         newSet.delete(branch)
@@ -98,7 +97,6 @@ export default function Home() {
         statistics: overallStats,
         lines_data: analysisResult.lines?.data || null,
         battery_capacity: analysisResult.generators?.battery_capacity || null,
-        mw_from_data: analysisResult.lines?.mw_from_data || null,
         battery_table: analysisResult.generators?.battery_table || null,
         buses_data: analysisResult.buses?.data || null,
         buses_with_violations_count: analysisResult.buses?.buses_with_violations_count || 0

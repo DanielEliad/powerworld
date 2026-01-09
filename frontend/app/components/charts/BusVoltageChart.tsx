@@ -1,5 +1,6 @@
 'use client'
 
+import { useMemo } from 'react'
 import dynamic from 'next/dynamic'
 import { BusesData } from '../../types'
 import { getPlotlyLayout, PLOTLY_CONFIG } from '../../lib/constants'
@@ -19,7 +20,7 @@ interface BusVoltageChartProps {
 }
 
 export function BusVoltageChart({ busesData }: BusVoltageChartProps) {
-  const getTraces = () => {
+  const traces = useMemo(() => {
     return Object.entries(busesData.data.buses).map(([busNum, values]) => ({
       x: busesData.data.datetime,
       y: values,
@@ -28,7 +29,7 @@ export function BusVoltageChart({ busesData }: BusVoltageChartProps) {
       name: `Bus ${busNum}`,
       line: { width: 2 }
     }))
-  }
+  }, [busesData.data.datetime, busesData.data.buses])
 
   return (
     <div className="bg-gray-800 border border-gray-700 p-4 rounded">
@@ -39,7 +40,7 @@ export function BusVoltageChart({ busesData }: BusVoltageChartProps) {
         Per unit voltage at each bus. Values should stay between 0.9 and 1.1 p.u.
       </p>
       <Plot
-        data={getTraces()}
+        data={traces}
         layout={{
           ...getPlotlyLayout('Time', 'Voltage (p.u.)', 600, true),
           shapes: [
