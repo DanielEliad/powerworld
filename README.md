@@ -1,119 +1,60 @@
 # PowerWorld Simulation Analyzer
 
-A web application for analyzing PowerWorld simulation CSV files with interactive visualizations.
-
-## Features
-
-- CSV file upload (drag & drop or file picker)
-- Interactive time series charts showing branch loading over time
-- Current loading bar chart
-- Loading distribution histogram
-- Statistics dashboard
-- Branch selection for filtering data
-- Visual indicators for 100% limit threshold
+Web application for analyzing PowerWorld simulation data with interactive visualizations.
 
 ## Quick Start
 
-### Using Docker (Recommended)
-
-```bash
-./start.sh
-```
-
-Or manually:
-```bash
-docker-compose up --build
-```
-
-Then open `http://localhost:3000` in your browser (frontend) and `http://localhost:8000` for the API.
-
-### Using Docker Run
-
-**Backend:**
-```bash
-docker build -f Dockerfile.backend -t powerworld-backend .
-docker run -p 8000:8000 powerworld-backend
-```
-
-**Frontend:**
-```bash
-docker build -f Dockerfile.frontend -t powerworld-frontend .
-docker run -p 3000:3000 -e NEXT_PUBLIC_API_URL=http://localhost:8000 powerworld-frontend
-```
-
 ### Local Development
 
-**Backend:**
 ```bash
-cd backend
-pip install -r requirements.txt
-python main.py
+# With Nix (recommended)
+nix-shell
+./dev.sh
+
+# Without Nix (requires python3 & node)
+./dev.sh
 ```
 
-**Frontend:**
+Opens:
+- Frontend: http://localhost:3000
+- Backend API: http://localhost:8000
+- API Docs: http://localhost:8000/docs
+
+Both servers hot-reload on file changes.
+
+### Docker (Local)
+
 ```bash
-cd frontend
-npm install
-npm run dev
+docker build -f Dockerfile.combined -t powerworld .
+docker run -p 3000:3000 powerworld
 ```
 
-Then open `http://localhost:3000` in your browser.
+## Deploy to Render
+
+1. Create a new **Web Service** on Render
+2. Connect your GitHub repo
+3. Configure:
+   - **Environment**: Docker
+   - **Dockerfile Path**: `Dockerfile.combined`
+   - **Port**: `3000`
+
+No environment variables needed - the app works out of the box.
+
+## Project Structure
+
+```
+├── frontend/             # Next.js app
+│   └── app/
+│       ├── components/   # React components
+│       ├── hooks/        # Custom hooks
+│       └── lib/          # Utilities
+├── backend/              # FastAPI server
+├── dev.sh                # Development script
+├── shell.nix             # Nix environment
+└── Dockerfile.combined   # Production build
+```
 
 ## Tech Stack
 
-- **Frontend**: Next.js 14 with TypeScript, Tailwind CSS, Plotly.js
-- **Backend**: FastAPI (Python)
-- **Charts**: Plotly.js for interactive visualizations
-- **Deployment**: Vercel (frontend), Railway/Render (backend)
-
-## Usage
-
-1. Start the services (via Docker or locally)
-2. Open `http://localhost:3000` in your browser
-3. Upload a CSV file with PowerWorld simulation data
-4. View interactive graphs and statistics
-
-## CSV Format
-
-The application expects CSV files with:
-- First column: DateTimeUTCExcelFormat (Excel date format)
-- Subsequent columns: Branch data with "% of MVA Limit From" in column names
-
-Example:
-```
-DateTimeUTCExcelFormat, Branch '1' '2' '1' % of MVA Limit From, ...
-45944.9166667, 80.74528, 42.62214, ...
-```
-
-## Deployment
-
-### Vercel (Frontend - Recommended)
-
-The Next.js frontend is optimized for Vercel deployment:
-
-1. Push your code to GitHub
-2. Import the project in Vercel
-3. Set root directory to `frontend`
-4. Add environment variable: `NEXT_PUBLIC_API_URL` pointing to your backend URL
-5. Deploy!
-
-The `vercel.json` is already configured for Next.js.
-
-### Backend Hosting
-
-For the FastAPI backend, deploy separately to:
-- **Railway** - Easy Python deployment, free tier
-- **Render** - Free tier available, good for FastAPI
-- **Fly.io** - Good for Docker deployments
-- **Heroku** - Traditional option (paid)
-
-After deploying the backend, update `NEXT_PUBLIC_API_URL` in Vercel to point to your backend URL.
-
-## Future Enhancements
-
-- Limitations configuration (set custom limits per branch)
-- Budgeting constraints
-- Export functionality
-- Multiple file comparison
-- Alert system for over-limit conditions
-
+- **Frontend**: Next.js 14, TypeScript, Tailwind CSS, Plotly.js
+- **Backend**: FastAPI, pandas, reportlab

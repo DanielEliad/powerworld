@@ -5,7 +5,9 @@ export enum ValidationErrorType {
   BATTERY_UNDERUTILIZED_ROUNDING = 'battery_underutilized_rounding',
   BATTERY_NOT_FULLY_USED = 'battery_not_fully_used',
   REVERSE_POWER_FLOW = 'reverse_power_flow',
-  VOLTAGE_VIOLATION = 'voltage_violation'
+  VOLTAGE_VIOLATION = 'voltage_violation',
+  LOAD_ENERGY_NOT_CONSERVED = 'load_energy_not_conserved',
+  LOAD_PQ_NOT_SYNCHRONIZED = 'load_pq_not_synchronized'
 }
 
 type BatteryCapacityTooLargeError = {
@@ -68,6 +70,18 @@ type VoltageViolationError = {
   voltage: number
 }
 
+type LoadEnergyNotConservedError = {
+  type: ValidationErrorType.LOAD_ENERGY_NOT_CONSERVED
+  element: string
+  message: string
+}
+
+type LoadPQNotSynchronizedError = {
+  type: ValidationErrorType.LOAD_PQ_NOT_SYNCHRONIZED
+  element: string
+  message: string
+}
+
 export type ValidationError = 
   | BatteryCapacityTooLargeError 
   | BatteryCapacityNegativeError
@@ -76,6 +90,8 @@ export type ValidationError =
   | BatteryNotFullyUsedWarning 
   | ReverseFlowError 
   | VoltageViolationError
+  | LoadEnergyNotConservedError
+  | LoadPQNotSynchronizedError
 
 export function parseValidationError(json: any): ValidationError {
   const errorType = json.error_type || json.type
@@ -142,6 +158,18 @@ export function parseValidationError(json: any): ValidationError {
         timestep: json.timestep,
         voltage: json.voltage
       }
+    case ValidationErrorType.LOAD_ENERGY_NOT_CONSERVED:
+      return {
+        type: ValidationErrorType.LOAD_ENERGY_NOT_CONSERVED,
+        element,
+        message: json.message || `Load energy not conserved`
+      }
+    case ValidationErrorType.LOAD_PQ_NOT_SYNCHRONIZED:
+      return {
+        type: ValidationErrorType.LOAD_PQ_NOT_SYNCHRONIZED,
+        element,
+        message: json.message || `Load P/Q not synchronized`
+      }
     default:
       throw new Error(`Unknown error type: ${errorType}`)
   }
@@ -176,7 +204,9 @@ export class BudgetSummary {
     public total_cost_eur: number,
     public budget_limit_eur: number,
     public percentage_used: number,
-    public is_over_budget: boolean
+    public is_over_budget: boolean,
+    public battery_cost_eur?: number,
+    public load_cost_eur?: number
   ) {}
 
   static fromJSON(json: any): BudgetSummary {
@@ -184,7 +214,9 @@ export class BudgetSummary {
       json.total_cost_eur,
       json.budget_limit_eur,
       json.percentage_used,
-      json.is_over_budget
+      json.is_over_budget,
+      json.battery_cost_eur,
+      json.load_cost_eur
     )
   }
 }
@@ -211,7 +243,7 @@ export class LinesData {
     public mw_from_data: { datetime: string[]; branches: Record<string, number[]> },
     public mw_from_branch_names: string[],
     public reverse_flow_errors: ValidationError[],
-    public branches_with_reverse_flow_count: number
+    public main_transformer_reverse_flow: boolean
   ) {}
 
   static fromJSON(json: any): LinesData {
@@ -224,7 +256,7 @@ export class LinesData {
       json.mw_from_data,
       json.mw_from_branch_names,
       (json.reverse_flow_errors || []).map((e: any) => parseValidationError(e)),
-      json.branches_with_reverse_flow_count || 0
+      json.main_transformer_reverse_flow || false
     )
   }
 }
@@ -261,8 +293,7 @@ export class GeneratorsData {
     public battery_by_bus: Record<string, string[]>,
     public battery_table: BatteryTable,
     public validation_errors: ValidationError[],
-    public battery_costs: Record<string, BatteryCost>,
-    public budget_summary: BudgetSummary
+    public battery_costs: Record<string, BatteryCost>
   ) {}
 
   static fromJSON(json: any): GeneratorsData {
@@ -279,8 +310,45 @@ export class GeneratorsData {
       (json.validation_errors || []).map((e: any) => parseValidationError(e)),
       Object.fromEntries(
         Object.entries(json.battery_costs || {}).map(([k, v]) => [k, BatteryCost.fromJSON(v)])
-      ),
-      BudgetSummary.fromJSON(json.budget_summary || { total_cost_eur: 0, budget_limit_eur: 0, percentage_used: 0, is_over_budget: false })
+      )
+    )
+  }
+}
+
+export class LoadsData {
+  constructor(
+    public columns: string[],
+    public rows: any[][],
+    public data: Record<string, any>[],
+    public datetime: string[],
+    public load_columns: string[],
+    public load_by_bus: Record<string, { mw_col: string; mvar_col: string }>,
+    public mw_data: Record<string, number[]>,
+    public mvar_data: Record<string, number[]>,
+    public original_mw_data: Record<string, number[]>,
+    public differences: Record<string, { mw: number[]; mvar: number[] }>,
+    public energy_moved_kwh: Record<string, number>,
+    public load_cost_eur: number,
+    public validation_errors: ValidationError[],
+    public is_first_paste: boolean
+  ) {}
+
+  static fromJSON(json: any): LoadsData {
+    return new LoadsData(
+      json.columns,
+      json.rows,
+      json.data,
+      json.datetime,
+      json.load_columns || [],
+      json.load_by_bus || {},
+      json.mw_data || {},
+      json.mvar_data || {},
+      json.original_mw_data || json.mw_data || {},  // Fallback to mw_data for first paste
+      json.differences || {},
+      json.energy_moved_kwh || {},
+      json.load_cost_eur || 0,
+      (json.validation_errors || []).map((e: any) => parseValidationError(e)),
+      json.is_first_paste || false
     )
   }
 }
@@ -289,26 +357,36 @@ export class AnalysisResult {
   constructor(
     public lines: LinesData | null,
     public generators: GeneratorsData | null,
-    public buses: BusesData | null
+    public buses: BusesData | null,
+    public loads: LoadsData | null,
+    public budget_summary: BudgetSummary | null
   ) {}
 
   static empty(): AnalysisResult {
-    return new AnalysisResult(null, null, null)
+    return new AnalysisResult(null, null, null, null, null)
   }
 
   withLines(lines: LinesData): AnalysisResult {
-    return new AnalysisResult(lines, this.generators, this.buses)
+    return new AnalysisResult(lines, this.generators, this.buses, this.loads, this.budget_summary)
   }
 
   withGenerators(generators: GeneratorsData): AnalysisResult {
-    return new AnalysisResult(this.lines, generators, this.buses)
+    return new AnalysisResult(this.lines, generators, this.buses, this.loads, this.budget_summary)
   }
 
   withBuses(buses: BusesData): AnalysisResult {
-    return new AnalysisResult(this.lines, this.generators, buses)
+    return new AnalysisResult(this.lines, this.generators, buses, this.loads, this.budget_summary)
+  }
+
+  withLoads(loads: LoadsData): AnalysisResult {
+    return new AnalysisResult(this.lines, this.generators, this.buses, loads, this.budget_summary)
+  }
+
+  withBudgetSummary(budget: BudgetSummary | null): AnalysisResult {
+    return new AnalysisResult(this.lines, this.generators, this.buses, this.loads, budget)
   }
 
   hasData(): boolean {
-    return this.lines !== null || this.generators !== null || this.buses !== null
+    return this.lines !== null || this.generators !== null || this.buses !== null || this.loads !== null
   }
 }

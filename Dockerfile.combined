@@ -21,7 +21,7 @@ RUN npm ci
 
 # Copy frontend files and build
 COPY frontend/ ./
-RUN NODE_ENV=production npm run build
+RUN npm run build
 
 # Copy backend files
 WORKDIR /app
