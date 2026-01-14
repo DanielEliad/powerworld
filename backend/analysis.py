@@ -148,15 +148,19 @@ def analyze_lines(text: str) -> Dict[str, Any]:
 
     main_line_below_90 = False
     main_line_flatness = None
+    main_line_load_factor = None
 
     if main_line_col and main_line_col in mva_limit_df.columns:
         main_line_values = [float(v) for v in mva_limit_df[main_line_col].tolist() if pd.notna(v)]
         if main_line_values:
             main_line_below_90 = all(v < 90 for v in main_line_values)
             mean = sum(main_line_values) / len(main_line_values)
+            peak = max(main_line_values)
             if mean > 0:
                 variance = sum((v - mean) ** 2 for v in main_line_values) / len(main_line_values)
                 main_line_flatness = (variance ** 0.5 / mean) * 100
+            if peak > 0:
+                main_line_load_factor = mean / peak
 
     # Check main transformer (1->2) reverse flow (requires "MW From" columns)
     main_transformer_reverse_flow = None
@@ -183,6 +187,7 @@ def analyze_lines(text: str) -> Dict[str, Any]:
         "branch_names": list(branches.keys()),
         "main_line_below_90": main_line_below_90,
         "main_line_flatness": main_line_flatness,
+        "main_line_load_factor": main_line_load_factor,
         "main_transformer_reverse_flow": main_transformer_reverse_flow,
         "reverse_flow_errors": reverse_flow_errors
     }

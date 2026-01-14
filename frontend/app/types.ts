@@ -240,6 +240,7 @@ export class LinesData {
     public branch_names: string[],
     public main_line_below_90: boolean,
     public main_line_flatness: number | null,
+    public main_line_load_factor: number | null,
     public reverse_flow_errors: ValidationError[],
     public main_transformer_reverse_flow: boolean | null
   ) {}
@@ -251,6 +252,7 @@ export class LinesData {
       json.branch_names,
       json.main_line_below_90,
       json.main_line_flatness,
+      json.main_line_load_factor !== undefined ? json.main_line_load_factor : null,
       (json.reverse_flow_errors || []).map((e: any) => parseValidationError(e)),
       json.main_transformer_reverse_flow !== undefined ? json.main_transformer_reverse_flow : null
     )

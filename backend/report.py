@@ -240,6 +240,7 @@ def _add_statistics_section(story, request, heading_style):
         ['Branches Over 100%', str(stats.get('overLimit', 0))],
         ['Main Line Below 90%', 'Yes' if stats.get('mainLineBelow90', False) else 'No'],
         ['Main Line Flatness', f"{stats.get('mainLineFlatness', 0):.2f}%" if stats.get('mainLineFlatness') is not None else 'N/A'],
+        ['Main Line Load Factor', f"{stats.get('mainLineLoadFactor', 0):.3f}" if stats.get('mainLineLoadFactor') is not None else 'N/A'],
         ['Branches w/ Reverse Flow', str(stats.get('reverseFlowCount', 0))]
     ]
 

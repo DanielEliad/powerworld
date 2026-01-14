@@ -9,6 +9,7 @@ export interface OverallStats {
   overLimit: number
   mainLineBelow90: boolean
   mainLineFlatness: number | null
+  mainLineLoadFactor: number | null
   mainTransformerReverseFlow: boolean | null
 }
 
@@ -48,6 +49,11 @@ export function StatisticsGrid({ stats, analysisResult }: StatisticsGridProps) {
           title="Main Line (1→2) Flatness"
           value={stats.mainLineFlatness != null ? `${stats.mainLineFlatness.toFixed(2)}%` : 'N/A'}
           subtitle="Lower is flatter"
+        />
+        <StatCard
+          title="Main Line (1→2) Load Factor"
+          value={stats.mainLineLoadFactor != null ? stats.mainLineLoadFactor.toFixed(3) : 'N/A'}
+          subtitle="Avg / Peak (higher is flatter)"
         />
         {analysisResult.lines && stats.mainTransformerReverseFlow !== null && (
           <StatCard
@@ -121,6 +127,7 @@ export function getOverallStats(analysisResult: AnalysisResult): OverallStats | 
     overLimit,
     mainLineBelow90: analysisResult.lines.main_line_below_90,
     mainLineFlatness: analysisResult.lines.main_line_flatness,
+    mainLineLoadFactor: analysisResult.lines.main_line_load_factor,
     mainTransformerReverseFlow: analysisResult.lines.main_transformer_reverse_flow
   }
 }
